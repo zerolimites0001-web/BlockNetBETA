@@ -116,7 +116,11 @@ function bake(){
   Object.keys(imeshes).forEach(function(k){ scene.remove(imeshes[k]); if(imeshes[k].dispose) imeshes[k].dispose(); });
   imeshes = {};
   var byType = {};
-  world.forEach(function(b,k){ (byType[b] = byType[b]||[]).push(k.split(",").map(Number)); });
+  world.forEach(function(b,k){
+    var p = k.split(","), x = +p[0], y = +p[1], z = +p[2];
+    if(getS(x+1,y,z) && getS(x-1,y,z) && getS(x,y+1,z) && getS(x,y-1,z) && getS(x,y,z+1) && getS(x,y,z-1)) return;
+    (byType[b] = byType[b]||[]).push([x,y,z]);
+  });
   Object.keys(byType).forEach(function(b){
     var arr = byType[b];
     var m = new THREE.InstancedMesh(sharedGeo, matFor(b), arr.length);
@@ -436,7 +440,7 @@ function init(){
   camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 600);
   renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:"low-power"});
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio||1, 1.25));
+  renderer.setPixelRatio(Math.min(devicePixelRatio||1, 1));
   document.getElementById("game").appendChild(renderer.domElement);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x557755, 1.0));
   var sun = new THREE.DirectionalLight(0xffffff, 0.6);
