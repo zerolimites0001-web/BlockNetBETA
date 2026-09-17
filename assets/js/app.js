@@ -347,7 +347,12 @@ function rebuildType(b){
   if(!b || !sharedGeo) return;
   if(imeshes[b]){ scene.remove(imeshes[b]); if(imeshes[b].dispose) imeshes[b].dispose(); }
   var arr = [];
-  world.forEach(function(v,k){ if(v===b) arr.push(k.split(",").map(Number)); });
+  world.forEach(function(v,k){
+    if(v!==b) return;
+    var p = k.split(","), x = +p[0], y = +p[1], z = +p[2];
+    if(getS(x+1,y,z) && getS(x-1,y,z) && getS(x,y+1,z) && getS(x,y-1,z) && getS(x,y,z+1) && getS(x,y,z-1)) return;
+    arr.push([x,y,z]);
+  });
   if(!arr.length){ delete imeshes[b]; return; }
   var m = new THREE.InstancedMesh(sharedGeo, matFor(b), arr.length);
   var M = new THREE.Matrix4();
