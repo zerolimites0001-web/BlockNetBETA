@@ -44,7 +44,7 @@ function tex(n, opt){
   var ck = n + JSON.stringify(opt||{});
   if(texCache[ck]) return texCache[ck];
   var t = new THREE.TextureLoader().load("./assets/textures/"+n+".png");
-  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestMipmapLinearFilter; t.generateMipmaps = true; // mipmap = longe liso, perto pixelado
   var m = new THREE.MeshLambertMaterial(Object.assign({map:t}, opt||{}));
   texCache[ck] = m; return m;
 }
