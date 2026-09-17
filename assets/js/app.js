@@ -5,7 +5,15 @@ window.__blocknet_booted = true;
 
 var CS = 16, SEA = 9;
 var SEED = (Math.random()*9999)|0, WORLD_ID = null;
-var scene, camera, renderer, world = new Map();
+var scene, camera, renderer;
+var chunks = {}; // id "cx,cz" -> Map(chaveNumérica -> bloco). Zero string por bloco.
+function ck(x,z){ return Math.floor(x/CS)+","+Math.floor(z/CS); }
+function lk(x,y,z){ return (x&15)|((z&15)<<4)|(y<<9); }
+function cmap(x,z,create){
+  var id = ck(x,z), m = chunks[id];
+  if(!m && create){ m = chunks[id] = new Map(); }
+  return m || null;
+}
 var chunkMeshes = {};
 var realR = 2;
 var keys = {}, sel = 0, third = false, yaw = 0, pitch = -0.4;
@@ -16,7 +24,10 @@ var chunkQueue = [], knownChunks = new Set(), lastCC = "";
 var pendingChunks = {}, inflight = 0, needsBake = false, chunkWorker = null;
 
 function K(x,y,z){ return x+","+y+","+z; }
-function get(x,y,z){ return world.get(K(x,y,z)) || null; }
+function get(x,y,z){ var m = cmap(x,z,false); return m ? (m.get(lk(x,y,z)) || null) : null; }
+function has(x,y,z){ var m = cmap(x,z,false); return m ? m.has(lk(x,y,z)) : false; }
+function setB_(x,y,z,b){ cmap(x,z,true).set(lk(x,y,z), b); }
+function delB(x,y,z){ var m = cmap(x,z,false); if(m) m.delete(lk(x,y,z)); }
 function isSolid(b){ return !!b && b !== "water"; }
 function getS(x,y,z){ var b = get(x,y,z); return isSolid(b) ? b : null; }
 function rnd(x,y,z,s){
@@ -67,19 +78,18 @@ function fillChunk(cx,cz){
     var wx=cx*CS+x, wz=cz*CS+z, h=gh(wx,wz);
     for(var y=0;y<=h;y++){
       var b = y===0 ? "rock" : (y===h ? (h<=SEA+1?"sand":"grass") : (y>h-3?"dirt":(rnd(wx,y,wz)<0.08?"rock":"stone")));
-      world.set(K(wx,y,wz), b);
+      setB_(wx,y,wz, b);
     }
     if(h>SEA+1 && ((wx*31+wz*17+SEED)&31)<2){
       var th = 3+((rnd(wx,h,wz,SEED+7)*2)|0);
-      for(var i=1;i<=th;i++) world.set(K(wx,h+i,wz),"wood");
+      for(var i=1;i<=th;i++) setB_(wx,h+i,wz,"wood");
       for(var dx=-2;dx<=2;dx++) for(var dz=-2;dz<=2;dz++) for(var dy=0;dy<2;dy++){
         if(Math.abs(dx)===2 && Math.abs(dz)===2) continue;
-        var k = K(wx+dx,h+th-1+dy,wz+dz);
-        if(!world.has(k)) world.set(k,"leaves");
+        if(!has(wx+dx,h+th-1+dy,wz+dz)) setB_(wx+dx,h+th-1+dy,wz+dz,"leaves");
       }
-      world.set(K(wx,h+th+1,wz),"leaves");
+      setB_(wx,h+th+1,wz,"leaves");
     }
-    if(h<SEA) for(var w=h+1;w<=SEA;w++) world.set(K(wx,w,wz),"water");
+    if(h<SEA) for(var w=h+1;w<=SEA;w++) setB_(wx,w,wz,"water");
   }
 }
 function fillChunkWithEdits(cx,cz){ fillChunk(cx,cz); if(WORLD_ID) applyEditsChunk(cx,cz); }
@@ -93,10 +103,11 @@ function bootWorker(){
     var id = m.cx+','+m.cz;
     if(pendingChunks[id]){ delete pendingChunks[id]; inflight = Math.max(0, inflight-1); }
     if(!knownChunks.has(id)){
+      var cm = cmap(m.cx*CS, m.cz*CS, true);
       for(var i=0;i<m.blocks.length;i++){
-        var r = m.blocks[i], k = K(r[0],r[1],r[2]);
-        if(r[3]==='leaves' && world.has(k)) continue;
-        world.set(k, r[3]);
+        var r = m.blocks[i], li = lk(r[0],r[1],r[2]);
+        if(r[3]==='leaves' && cm.has(li)) continue;
+        cm.set(li, r[3]);
       }
       if(WORLD_ID) applyEditsChunk(m.cx, m.cz);
       knownChunks.add(id);
@@ -137,13 +148,17 @@ function bakeChunk(cx,cz){
   var id = chunkId(cx,cz);
   disposeChunkMeshes(id);
   var groups = {}; // "tipo:slot" -> {mat, pos, nor, uv, idx}
-  var x, y, z, f, nb, key, g;
-  for(x=cx*CS;x<cx*CS+CS;x++) for(z=cz*CS;z<cz*CS+CS;z++) for(y=0;y<72;y++){
-    var b = world.get(K(x,y,z)); if(!b) continue;
+  var x, y, z, f, nb, key, g, nx2, ny2, nz2;
+  var cm0 = cmap(cx*CS, cz*CS, false);
+  if(!cm0) return;
+  cm0.forEach(function(b, li){
+    var x = cx*CS+(li&15), z = cz*CS+((li>>4)&15), y = li>>9;
     var mats = slotMats(b);
     for(f=0;f<6;f++){
       var F = FACES[f];
-      nb = world.get(K(x+F.o[0], y+F.o[1], z+F.o[2]));
+      nx2 = x+F.o[0]; ny2 = y+F.o[1]; nz2 = z+F.o[2];
+      if(Math.floor(nx2/CS)===cx && Math.floor(nz2/CS)===cz){ nb = cm0.get(lk(nx2,ny2,nz2)) || null; }
+      else { nb = get(nx2,ny2,nz2); }
       if(isOpaque(nb)) continue;              // vizinho opaco esconde
       if(nb === b) continue;                  // mesmo tipo (água/água, vidro/vidro) esconde
       if(!TRANSP[b] && nb && TRANSP[nb]){ /* sólido ao lado de água: desenha */ }
@@ -158,7 +173,7 @@ function bakeChunk(cx,cz){
       }
       g.idx.push(base, base+1, base+2, base, base+2, base+3);
     }
-  }
+  });
   var keys = Object.keys(groups);
   if(!keys.length) return;
   var geo = new THREE.BufferGeometry(), matsArr = [], start = 0, k;
@@ -198,14 +213,8 @@ function chunksAround(r){
   for(var dx=-r;dx<=r;dx++) for(var dz=-r;dz<=r;dz++) out.push([ccx+dx, ccz+dz]);
   return out;
 }
-function clearFar(chunks){
-  var keep = {};
-  chunks.forEach(function(c){ keep[c[0]+","+c[1]] = 1; });
-  Array.from(world.keys()).forEach(function(k){
-    var p = k.split(",");
-    var cx = Math.floor((+p[0])/CS), cz = Math.floor((+p[2])/CS);
-    if(!keep[cx+","+cz]) world.delete(k);
-  });
+function clearFar(){
+  // restos caem no unload do stream (delete chunks[id]); aqui só garantia
 }
 function ensureGround(){
   var fx = Math.floor(px), fz = Math.floor(pz), guard = 0;
@@ -340,7 +349,7 @@ function applyEditsChunk(cx,cz){
   edits.forEach(function(b,xyz){
     var p = xyz.split(",").map(Number);
     if(Math.floor(p[0]/CS)===cx && Math.floor(p[2]/CS)===cz){
-      if(b) world.set(K(p[0],p[1],p[2]), b); else world.delete(K(p[0],p[1],p[2]));
+      if(b) setB_(p[0],p[1],p[2], b); else delB(p[0],p[1],p[2]);
     }
   });
 }
@@ -363,8 +372,8 @@ function setB(x,y,z,b){
     var pfx = Math.floor(px), pfy0 = Math.floor(py), pfy1 = Math.floor(py+1.6), pfz = Math.floor(pz);
     if(x===pfx && (y===pfy0||y===pfy1) && z===pfz) return;
   }
-  var kk = K(x,y,z), prev = world.get(kk);
-  if(b) world.set(kk, b); else world.delete(kk);
+  var kk = K(x,y,z), prev = get(x,y,z);
+  if(b) setB_(x,y,z, b); else delB(x,y,z);
   if(WORLD_ID){ edits.set(kk, b||null); dbPutEdit(WORLD_ID, kk, b||null); saveMeta(); }
   if(!b) lastBType[kk] = prev;
   rebakeAround(x, z);
@@ -539,7 +548,7 @@ function init(){
   function enterWorld(w){
     WORLD_ID = w.id; SEED = w.seed; px = w.px; pz = w.pz; py = w.py; yaw = w.yaw||0; sel = w.sel||0;
     buildBar();
-    world.clear(); edits.clear(); knownChunks.clear();
+    chunks = {}; edits.clear(); knownChunks.clear();
     chunkQueue = []; pendingChunks = {}; inflight = 0; needsBake = false; lastCC = "";
     Object.keys(chunkMeshes).forEach(disposeChunkMeshes);
     document.getElementById("title").classList.add("hidden");
