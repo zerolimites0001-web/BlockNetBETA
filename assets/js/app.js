@@ -518,6 +518,13 @@ function init(){
   });
   function tb(id, fn){ document.getElementById(id).addEventListener("touchstart", function(e){ e.preventDefault(); fn(); }, {passive:false}); }
   tb("bJump", function(){ keys.jump = true; setTimeout(function(){ keys.jump = false; }, 160); });
+  (function(){
+    var sn = document.getElementById("bSneak");
+    sn.addEventListener("touchstart", function(e){ e.preventDefault(); keys.sneak = true; }, {passive:false});
+    function snOff(e){ e.preventDefault(); keys.sneak = false; }
+    sn.addEventListener("touchend", snOff, {passive:false});
+    sn.addEventListener("touchcancel", snOff, {passive:false});
+  })();
   tb("bInv", function(){ toggleMenu(); });
   tb("bCam", function(){ third = !third; });
   tb("bBrk", function(){ hit(true); });
@@ -637,7 +644,7 @@ function init(){
         fpsFrames = 0; fpsT = fnow;
       }
       if(!WORLD_ID){ renderer.render(scene, camera); return; }
-      var sp = 6*dt, f = (keys.f?1:0)-(keys.b?1:0), s = (keys.r?1:0)-(keys.l?1:0);
+      var sp = 6*dt*(keys.sneak?0.45:1), f = (keys.f?1:0)-(keys.b?1:0), s = (keys.r?1:0)-(keys.l?1:0);
       var sin = Math.sin(yaw), cos = Math.cos(yaw);
       var dx = (-sin*f+cos*s)*sp, dz = (-cos*f-sin*s)*sp;
       var E = 0.3;
