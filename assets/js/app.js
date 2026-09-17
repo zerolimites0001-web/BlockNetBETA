@@ -588,9 +588,16 @@ function init(){
         });
       });
     });
+    var fpsEl = document.getElementById("fps"), fpsFrames = 0, fpsT = performance.now();
     (function loop(t){
       requestAnimationFrame(loop);
       var dt = Math.min(0.05, (t-last)/1000); last = t;
+      fpsFrames++;
+      var fnow = performance.now();
+      if(fnow - fpsT >= 500){
+        fpsEl.textContent = Math.round(fpsFrames*1000/(fnow-fpsT)) + " FPS";
+        fpsFrames = 0; fpsT = fnow;
+      }
       if(!WORLD_ID){ renderer.render(scene, camera); return; }
       var sp = 6*dt, f = (keys.f?1:0)-(keys.b?1:0), s = (keys.r?1:0)-(keys.l?1:0);
       var sin = Math.sin(yaw), cos = Math.cos(yaw);
