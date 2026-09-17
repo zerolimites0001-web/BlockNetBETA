@@ -59,28 +59,55 @@ function slotMats(b){
 }
 function slotFor(dir){ return dir==='+y' ? 'top' : (dir==='-y' ? 'bot' : 'side'); }
 // ---------- terreno (fallback sync; worker tem cópia) ----------
-function gh(x,z){
-  var seedF = SEED*0.001;
-  var wx = LevelNoise.simplex(x*0.02+seedF+9.1, z*0.02-seedF+3.7);
-  var wz = LevelNoise.simplex(x*0.02-seedF-2.3, z*0.02+seedF+7.9);
-  var qx = x+wx*48, qz = z+wz*48;
-  var cont = LevelNoise.simplexFbm(qx*0.012+seedF, qz*0.012-seedF, 3);
+function biomeAt(X, Z, SD){
+  var seed = (SD === undefined) ? SEED : SD, seedF = seed*0.001;
+  var wx = LevelNoise.simplex(X*0.02+seedF+9.1, Z*0.02-seedF+3.7);
+  var wz = LevelNoise.simplex(X*0.02-seedF-2.3, Z*0.02+seedF+7.9);
+  var qx = X+wx*48, qz = Z+wz*48;
+  var cont = LevelNoise.simplexFbm(qx*0.008+seedF, qz*0.008-seedF, 3);
+  var temp = LevelNoise.perlin(qx*0.01+seed*0.002+100, qz*0.01-seed*0.002-100);
+  var moist = LevelNoise.perlin(qx*0.015-seed*0.003+400, qz*0.015+seed*0.003-200);
   var base = LevelNoise.perlin(qx*0.055, qz*0.055);
   var det = LevelNoise.perlin(qx*0.17+300, qz*0.17-150);
   var r = LevelNoise.ridged(qx*0.02+500, qz*0.02-300, 4);
-  var mask = Math.max(0, cont-0.38)*3.2; if(mask>1) mask=1; mask=mask*mask;
-  var plain = Math.max(0, 0.30-Math.abs(cont-0.05))*8;
-  var h = 11 + cont*7 + base*4.5 + det*2 - plain + r*mask*24;
-  return Math.max(3, Math.floor(h));
+  var mMask = Math.max(0, cont-0.30)*2.6; if(mMask>1)mMask=1; mMask=mMask*mMask;
+  var h, type;
+  if(cont < -0.18){
+    h = SEA-3 + Math.floor((cont+0.18)*14 + det*1.5);
+    if(h > SEA-1) h = SEA-1;
+    if(h < 2) h = 2;
+    type = 'ocean';
+  } else if(cont < -0.08){
+    h = SEA + (det > 0 ? 1 : 0);
+    type = 'beach';
+  } else {
+    var plain = Math.max(0, 0.30-Math.abs(cont-0.05))*8;
+    h = Math.floor(11 + cont*9 + base*4 + det*2 - plain + r*mMask*26);
+    if(h <= SEA+1){ h = SEA+1; type = 'beach'; }
+    else if(mMask > 0.45 && h > SEA+8){ type = 'mountain'; }
+    else if(temp > 0.22 && moist < 0.10){ type = 'desert'; }
+    else if(moist > 0.12){ type = 'forest'; }
+    else { type = 'plains'; }
+    if(h < 3) h = 3;
+  }
+  return {h:h, type:type};
 }
+function gh(x,z){ return biomeAt(x, z, SEED).h; }
 function fillChunk(cx,cz){
   for(var x=0;x<CS;x++) for(var z=0;z<CS;z++){
-    var wx=cx*CS+x, wz=cz*CS+z, h=gh(wx,wz);
+    var wx=cx*CS+x, wz=cz*CS+z;
+    var bi=biomeAt(wx,wz,SEED), h=bi.h, t=bi.type;
     for(var y=0;y<=h;y++){
-      var b = y===0 ? "rock" : (y===h ? (h<=SEA+1?"sand":"grass") : (y>h-3?"dirt":(rnd(wx,y,wz)<0.08?"rock":"stone")));
-      setB_(wx,y,wz, b);
+      var b;
+      if(y===0) b="rock";
+      else if(t==="ocean") b = y===h?"sand":(y>h-2?"dirt":"stone");
+      else if(t==="beach"||t==="desert") b = y===h?"sand":(y>h-3?"sand":"stone");
+      else if(t==="mountain") b = y===h?(h>SEA+10?"rock":"grass"):(y>h-3?(h>SEA+10?"stone":"dirt"):"stone");
+      else b = y===h?"grass":(y>h-3?"dirt":(rnd(wx,y,wz)<0.08?"rock":"stone"));
+      setB_(wx,y,wz,b);
     }
-    if(h>SEA+1 && ((wx*31+wz*17+SEED)&31)<2){
+    var tree = t==="forest" ? (((wx*7+wz*13+SEED)&7)<2) : (t==="plains" ? (((wx*31+wz*17+SEED)&31)<2) : false);
+    if(tree && h>SEA+1){
       var th = 3+((rnd(wx,h,wz,SEED+7)*2)|0);
       for(var i=1;i<=th;i++) setB_(wx,h+i,wz,"wood");
       for(var dx=-2;dx<=2;dx++) for(var dz=-2;dz<=2;dz++) for(var dy=0;dy<2;dy++){
@@ -575,10 +602,14 @@ function init(){
         stream();
         if(w.fresh){
           (function findLand(){
+            var fx=8, fz=8, ok=false;
             for(var r=0;r<64;r+=4) for(var a=0;a<8;a++){
               var sx2 = Math.round(8+Math.cos(a/8*6.283)*r), sz2 = Math.round(8+Math.sin(a/8*6.283)*r);
-              if(gh(sx2,sz2) > SEA){ px = sx2+0.5; pz = sz2+0.5; return; }
+              var bi = biomeAt(sx2,sz2,SEED);
+              if(bi.h > SEA && (bi.type==='plains'||bi.type==='forest')){ px = sx2+0.5; pz = sz2+0.5; return; }
+              if(!ok && bi.h > SEA){ fx = sx2; fz = sz2; ok = true; }
             }
+            if(ok){ px = fx+0.5; pz = fz+0.5; }
           })();
           for(var y=60;y>0;y--){ if(getS(Math.floor(px),y,Math.floor(pz))){ py = y+1.01; break; } }
           w.fresh = false; w.px = px; w.py = py; w.pz = pz; dbPutWorld(w);
