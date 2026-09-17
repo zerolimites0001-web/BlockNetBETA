@@ -12,6 +12,11 @@ var keys = {}, sel = 0, third = false, yaw = 0, pitch = -0.4;
 var px = 8.5, py = 20, pz = 8.5, vy = 0;
 var edits = new Map(), lastBType = {};
 var chunkQueue = [], knownChunks = new Set(), lastCC = "";
+var preloadOn = false, preloadN = 3;
+try{
+  preloadOn = localStorage.getItem('bn_pre') === '1';
+  preloadN = Math.min(8, Math.max(1, +(localStorage.getItem('bn_pren') || 3)));
+}catch(e){}
 var pendingChunks = {}, inflight = 0, needsBake = false, chunkWorker = null;
 
 function K(x,y,z){ return x+","+y+","+z; }
@@ -109,11 +114,13 @@ function requestBake(){
   if(now - lastBakeT > 400){ lastBakeT = now; bake(); }
   else if(!bakeTimer){ bakeTimer = setTimeout(function(){ bakeTimer = null; lastBakeT = performance.now(); bake(); }, 400); }
 }
+var _lastStTxt = '';
 function updateChunkStatus(){
   var st = document.getElementById('stChunk'); if(!st) return;
   var left = chunkQueue.length + inflight;
-  st.textContent = left>0 ? ('gerando chunks... ('+left+' na fila)')
+  var txt = left>0 ? ('gerando chunks... ('+left+' na fila)')
     : ('chunks '+knownChunks.size+' prontos ('+realR+'R)'+(optOn?' +vis'+optR:''));
+  if(txt !== _lastStTxt){ _lastStTxt = txt; st.textContent = txt; }
 }
 
 // ---------- bake ----------
@@ -224,11 +231,14 @@ function stream(){
     }
     if(did > 0) needsBake = true;
   }
-  Object.keys(pendingChunks).forEach(function(pid){
-    if(!want[pid]){ delete pendingChunks[pid]; inflight = Math.max(0, inflight-1); }
-  });
-  Array.from(knownChunks).forEach(function(kid){ if(!want[kid]) knownChunks.delete(kid); });
-  clearFar(cs);
+  if(id !== stream._lucc){ // descarrega SÓ ao trocar de chunk central (evita varrer o mundo todo tick)
+    stream._lucc = id;
+    Object.keys(pendingChunks).forEach(function(pid){
+      if(!want[pid]){ delete pendingChunks[pid]; inflight = Math.max(0, inflight-1); }
+    });
+    Array.from(knownChunks).forEach(function(kid){ if(!want[kid]) knownChunks.delete(kid); });
+    clearFar(cs);
+  }
   ensureGround();
   if(needsBake){ needsBake = false; requestBake(); }
   else if(!Object.keys(imeshes).length && knownChunks.size) bake();
@@ -391,51 +401,71 @@ function preloadShort(done){
 function wireSettings(){
   var r = document.getElementById("rgReal"), o = document.getElementById("ckOpt"),
       ro = document.getElementById("rgOpt"), box = document.getElementById("rgOptBox");
+  var cp = document.getElementById("ckPre"), rp = document.getElementById("rgPre"),
+      pbox = document.getElementById("rgPreBox");
+  if(cp){ cp.checked = preloadOn; rp.value = preloadN; }
   function sync(){
     realR = Math.min(32, Math.max(1, +r.value));
     optOn = o.checked; optR = Math.min(32, Math.max(1, +ro.value));
     document.getElementById("vReal").textContent = realR;
     document.getElementById("vOpt").textContent = optR;
     box.style.display = optOn ? "block" : "none";
+    if(cp){
+      preloadOn = cp.checked; preloadN = Math.min(8, Math.max(1, +rp.value));
+      document.getElementById("vPre").textContent = preloadN;
+      pbox.style.display = preloadOn ? "block" : "none";
+      try{ localStorage.setItem('bn_pre', preloadOn ? '1' : '0'); localStorage.setItem('bn_pren', preloadN); }catch(e){}
+    }
     lastCC = "";
   }
   r.oninput = sync; o.onchange = sync; ro.oninput = sync; sync();
+  if(cp){ cp.onchange = sync; rp.oninput = sync; sync(); }
 }
-function waitSpawnChunk(cx,cz){
+function waitChunks(list, onProg){
+  list.forEach(function(c){
+    var id = c[0]+','+c[1];
+    if(!knownChunks.has(id) && !pendingChunks[id] && chunkQueue.indexOf(id)<0) chunkQueue.push(id);
+  });
+  var total = list.length;
   return new Promise(function(res){
-    if(!chunkWorker){ genSync(cx,cz); needsBake = true; res(); return; }
-    var id = cx+','+cz, done = false;
-    if(knownChunks.has(id)){ res(); return; }
-    function h(e){
-      var m = e.data;
-      if(m && m.type === 'chunk' && m.cx === cx && m.cz === cz && !done){
-        done = true;
-        try{ chunkWorker.removeEventListener('message', h); }catch(x){}
-        finish(m.blocks);
-      }
-    }
-    function finish(blocks){
-      if(pendingChunks[id]){ delete pendingChunks[id]; inflight = Math.max(0, inflight-1); }
-      if(!knownChunks.has(id)){
-        for(var i=0;i<blocks.length;i++){
-          var r = blocks[i], k = K(r[0],r[1],r[2]);
-          if(r[3]==='leaves' && world.has(k)) continue;
-          world.set(k, r[3]);
+    var finished = false;
+    function tick(){
+      if(finished) return;
+      var have = 0, i;
+      for(i=0;i<list.length;i++){ if(knownChunks.has(list[i][0]+','+list[i][1])) have++; }
+      try{ onProg(have, total); }catch(e){}
+      if(have >= total){ finished = true; res(); return; }
+      if(chunkWorker){
+        var g = 0;
+        while(chunkQueue.length && inflight < 4 && g++ < 60){
+          var qid = chunkQueue.shift(), pp = qid.split(',');
+          if(knownChunks.has(qid) || pendingChunks[qid]) continue;
+          pendingChunks[qid] = 1; inflight++;
+          chunkWorker.postMessage({type:'gen', cx:+pp[0], cz:+pp[1], seed:SEED});
         }
-        if(WORLD_ID) applyEditsChunk(cx, cz);
-        knownChunks.add(id); needsBake = true;
+      } else {
+        var did = 0;
+        while(chunkQueue.length && did < 8){
+          var q2 = chunkQueue.shift(), p2 = q2.split(',');
+          if(knownChunks.has(q2)) continue;
+          genSync(+p2[0], +p2[1]); did++;
+        }
+        if(did) needsBake = true;
       }
-      res();
+      setTimeout(tick, 60);
     }
-    chunkWorker.addEventListener('message', h);
-    pendingChunks[id] = 1; inflight++;
-    chunkWorker.postMessage({type:'gen', cx:cx, cz:cz, seed:SEED});
     setTimeout(function(){
-      if(done) return; done = true;
-      try{ chunkWorker.removeEventListener('message', h); }catch(x){}
-      if(pendingChunks[id]){ delete pendingChunks[id]; inflight = Math.max(0, inflight-1); }
-      genSync(cx,cz); needsBake = true; res();
-    }, 8000);
+      if(finished) return;
+      list.forEach(function(c){
+        var id = c[0]+','+c[1];
+        if(!knownChunks.has(id)){
+          if(pendingChunks[id]){ delete pendingChunks[id]; inflight = Math.max(0, inflight-1); }
+          genSync(c[0], c[1]);
+        }
+      });
+      needsBake = true;
+    }, 25000);
+    tick();
   });
 }
 
@@ -540,7 +570,15 @@ function init(){
     var ld = document.getElementById("load"); ld.style.display = "flex";
     dbLoadEdits(w.id).then(function(rows){
       rows.forEach(function(r){ edits.set(r.xyz, r.b); });
-      waitSpawnChunk(Math.floor(px/CS), Math.floor(pz/CS)).then(function(){
+      var waitR = preloadOn ? Math.max(realR, preloadN) : realR;
+      var ccx0 = Math.floor(px/CS), ccz0 = Math.floor(pz/CS), cl = [];
+      for(var ix=-waitR;ix<=waitR;ix++) for(var iz=-waitR;iz<=waitR;iz++) cl.push([ccx0+ix, ccz0+iz]);
+      var lp = document.querySelector("#load p"), lf = document.querySelector("#load .fill");
+      waitChunks(cl, function(have,total){
+        var pc = Math.round(have/total*100);
+        lp.textContent = "Gerando mundo... "+pc+"% ("+have+"/"+total+" chunks)";
+        lf.style.width = pc+"%";
+      }).then(function(){
         stream();
         if(w.fresh){
           (function findLand(){
