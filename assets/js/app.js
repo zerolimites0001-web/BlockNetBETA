@@ -6,7 +6,7 @@ window.__blocknet_booted = true;
 var CS = 16, SEA = 9;
 var SEED = (Math.random()*9999)|0, WORLD_ID = null;
 var scene, camera, renderer, world = new Map();
-var imeshes = {}, farMesh = null, sharedGeo = null, farGeo = null;
+var chunkMeshes = {}, farMesh = null, sharedGeo = null, farGeo = null;
 var realR = 2, optOn = false, optR = 32;
 var keys = {}, sel = 0, third = false, yaw = 0, pitch = -0.4;
 var px = 8.5, py = 20, pz = 8.5, vy = 0;
@@ -100,20 +100,14 @@ function bootWorker(){
         world.set(k, r[3]);
       }
       if(WORLD_ID) applyEditsChunk(m.cx, m.cz);
-      knownChunks.add(id); needsBake = true;
+      knownChunks.add(id);
+      bakeChunk(m.cx, m.cz);
     }
     updateChunkStatus();
-    if(needsBake){ needsBake = false; requestBake(); }
   };
   chunkWorker.onerror = function(){ chunkWorker = null; };
 }
 function genSync(cx,cz){ fillChunkWithEdits(cx,cz); knownChunks.add(cx+','+cz); }
-var lastBakeT = 0, bakeTimer = null;
-function requestBake(){
-  var now = performance.now();
-  if(now - lastBakeT > 400){ lastBakeT = now; bake(); }
-  else if(!bakeTimer){ bakeTimer = setTimeout(function(){ bakeTimer = null; lastBakeT = performance.now(); bake(); }, 400); }
-}
 var _lastStTxt = '';
 function updateChunkStatus(){
   var st = document.getElementById('stChunk'); if(!st) return;
@@ -123,25 +117,44 @@ function updateChunkStatus(){
   if(txt !== _lastStTxt){ _lastStTxt = txt; st.textContent = txt; }
 }
 
-// ---------- bake ----------
-function bake(){
+// ---------- bake POR CHUNK (nunca o mundo todo de uma vez) ----------
+function chunkId(cx,cz){ return cx+","+cz; }
+function disposeChunkMeshes(id){
+  var arr = chunkMeshes[id]; if(!arr) return;
+  arr.forEach(function(m){ scene.remove(m); if(m.dispose) m.dispose(); });
+  delete chunkMeshes[id];
+}
+function visibleInChunk(x,y,z){
+  return !(getS(x+1,y,z)&&getS(x-1,y,z)&&getS(x,y+1,z)&&getS(x,y-1,z)&&getS(x,y,z+1)&&getS(x,y,z-1));
+}
+function bakeChunk(cx,cz){
+  var id = chunkId(cx,cz);
+  disposeChunkMeshes(id);
   if(!sharedGeo) sharedGeo = new THREE.BoxGeometry(1,1,1);
-  Object.keys(imeshes).forEach(function(k){ scene.remove(imeshes[k]); if(imeshes[k].dispose) imeshes[k].dispose(); });
-  imeshes = {};
-  var byType = {};
-  world.forEach(function(b,k){
-    var p = k.split(","), x = +p[0], y = +p[1], z = +p[2];
-    if(getS(x+1,y,z) && getS(x-1,y,z) && getS(x,y+1,z) && getS(x,y-1,z) && getS(x,y,z+1) && getS(x,y,z-1)) return;
-    (byType[b] = byType[b]||[]).push([x,y,z]);
-  });
-  Object.keys(byType).forEach(function(b){
-    var arr = byType[b];
-    var m = new THREE.InstancedMesh(sharedGeo, matFor(b), arr.length);
-    var M = new THREE.Matrix4();
+  var byType = {}, x, y, z;
+  for(x=cx*CS;x<cx*CS+CS;x++) for(z=cz*CS;z<cz*CS+CS;z++) for(y=0;y<72;y++){
+    var b = world.get(K(x,y,z)); if(!b) continue;
+    if(!visibleInChunk(x,y,z)) continue;
+    (byType[b]=byType[b]||[]).push([x,y,z]);
+  }
+  var out = [], M = new THREE.Matrix4();
+  Object.keys(byType).forEach(function(bt){
+    var arr = byType[bt];
+    var m = new THREE.InstancedMesh(sharedGeo, matFor(bt), arr.length);
+    m.frustumCulled = false; // bounds da geo unitária quebrariam o culling
     arr.forEach(function(p,i){ M.makeTranslation(p[0]+0.5, p[1]+0.5, p[2]+0.5); m.setMatrixAt(i, M); });
-    m.instanceMatrix.needsUpdate = true; scene.add(m); imeshes[b] = m;
+    m.instanceMatrix.needsUpdate = true; scene.add(m); out.push(m);
   });
-  bakeFar();
+  if(out.length) chunkMeshes[id] = out;
+}
+function rebakeAround(x,z){
+  var cx = Math.floor(x/CS), cz = Math.floor(z/CS);
+  bakeChunk(cx,cz);
+  var lx = x-cx*CS, lz = z-cz*CS;
+  if(lx===0) bakeChunk(cx-1,cz);
+  if(lx===CS-1) bakeChunk(cx+1,cz);
+  if(lz===0) bakeChunk(cx,cz-1);
+  if(lz===CS-1) bakeChunk(cx,cz+1);
 }
 function bakeFar(){
   var cc0 = Math.floor(px/CS)+","+Math.floor(pz/CS)+"|"+(optOn?optR:0);
@@ -170,6 +183,7 @@ function bakeFar(){
   }
   if(!cells.length) return;
   farMesh = new THREE.InstancedMesh(farGeo, bakeFar._mat, cells.length);
+  farMesh.frustumCulled = false;
   var M = new THREE.Matrix4(), C = new THREE.Color();
   cells.forEach(function(cc,i){
     M.makeTranslation(cc[0], Math.floor(cc[1])-1.5, cc[2]); farMesh.setMatrixAt(i, M);
@@ -181,7 +195,6 @@ function bakeFar(){
   scene.add(farMesh);
 }
 bakeFar._cc = "";
-
 // ---------- stream ----------
 function chunksAround(r){
   var ccx = Math.floor(px/CS), ccz = Math.floor(pz/CS), out = [];
@@ -227,22 +240,19 @@ function stream(){
     while(chunkQueue.length && did < 6){
       var q2 = chunkQueue.shift(), p2 = q2.split(",");
       if(knownChunks.has(q2)) continue;
-      genSync(+p2[0], +p2[1]); did++;
+      genSync(+p2[0], +p2[1]); bakeChunk(+p2[0], +p2[1]); did++;
     }
-    if(did > 0) needsBake = true;
   }
   if(id !== stream._lucc){ // descarrega SÓ ao trocar de chunk central (evita varrer o mundo todo tick)
     stream._lucc = id;
     Object.keys(pendingChunks).forEach(function(pid){
       if(!want[pid]){ delete pendingChunks[pid]; inflight = Math.max(0, inflight-1); }
     });
-    Array.from(knownChunks).forEach(function(kid){ if(!want[kid]) knownChunks.delete(kid); });
+    Array.from(knownChunks).forEach(function(kid){ if(!want[kid]){ knownChunks.delete(kid); disposeChunkMeshes(kid); } });
     clearFar(cs);
   }
   ensureGround();
-  if(needsBake){ needsBake = false; requestBake(); }
-  else if(!Object.keys(imeshes).length && knownChunks.size) bake();
-  else bakeFar();
+  bakeFar();
   updateChunkStatus();
 }
 
@@ -361,23 +371,7 @@ function setB(x,y,z,b){
   if(b) world.set(kk, b); else world.delete(kk);
   if(WORLD_ID){ edits.set(kk, b||null); dbPutEdit(WORLD_ID, kk, b||null); saveMeta(); }
   if(!b) lastBType[kk] = prev;
-  rebuildType(b || lastBType[kk]);
-}
-function rebuildType(b){
-  if(!b || !sharedGeo) return;
-  if(imeshes[b]){ scene.remove(imeshes[b]); if(imeshes[b].dispose) imeshes[b].dispose(); }
-  var arr = [];
-  world.forEach(function(v,k){
-    if(v!==b) return;
-    var p = k.split(","), x = +p[0], y = +p[1], z = +p[2];
-    if(getS(x+1,y,z) && getS(x-1,y,z) && getS(x,y+1,z) && getS(x,y-1,z) && getS(x,y,z+1) && getS(x,y,z-1)) return;
-    arr.push([x,y,z]);
-  });
-  if(!arr.length){ delete imeshes[b]; return; }
-  var m = new THREE.InstancedMesh(sharedGeo, matFor(b), arr.length);
-  var M = new THREE.Matrix4();
-  arr.forEach(function(pn,i){ M.makeTranslation(pn[0]+0.5, pn[1]+0.5, pn[2]+0.5); m.setMatrixAt(i, M); });
-  m.instanceMatrix.needsUpdate = true; scene.add(m); imeshes[b] = m;
+  rebakeAround(x, z);
 }
 
 // ---------- boot ----------
@@ -564,8 +558,7 @@ function init(){
     buildBar();
     world.clear(); edits.clear(); knownChunks.clear();
     chunkQueue = []; pendingChunks = {}; inflight = 0; needsBake = false; lastCC = "";
-    Object.keys(imeshes).forEach(function(k){ scene.remove(imeshes[k]); if(imeshes[k].dispose) imeshes[k].dispose(); });
-    imeshes = {};
+    Object.keys(chunkMeshes).forEach(disposeChunkMeshes);
     document.getElementById("title").classList.add("hidden");
     var ld = document.getElementById("load"); ld.style.display = "flex";
     dbLoadEdits(w.id).then(function(rows){
@@ -579,6 +572,7 @@ function init(){
         lp.textContent = "Gerando mundo... "+pc+"% ("+have+"/"+total+" chunks)";
         lf.style.width = pc+"%";
       }).then(function(){
+        knownChunks.forEach(function(kid){ var pp = kid.split(','); bakeChunk(+pp[0], +pp[1]); });
         stream();
         if(w.fresh){
           (function findLand(){
@@ -591,7 +585,6 @@ function init(){
           w.fresh = false; w.px = px; w.py = py; w.pz = pz; dbPutWorld(w);
         }
         ensureGround();
-        if(needsBake){ needsBake = false; bake(); }
         ld.style.display = "none";
       });
     });
