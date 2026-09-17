@@ -6,17 +6,13 @@ window.__blocknet_booted = true;
 var CS = 16, SEA = 9;
 var SEED = (Math.random()*9999)|0, WORLD_ID = null;
 var scene, camera, renderer, world = new Map();
-var chunkMeshes = {}, farMesh = null, sharedGeo = null, farGeo = null;
-var realR = 2, optOn = false, optR = 32;
+var chunkMeshes = {};
+var realR = 2;
 var keys = {}, sel = 0, third = false, yaw = 0, pitch = -0.4;
 var px = 8.5, py = 20, pz = 8.5, vy = 0;
 var edits = new Map(), lastBType = {};
 var chunkQueue = [], knownChunks = new Set(), lastCC = "";
-var preloadOn = false, preloadN = 3;
-try{
-  preloadOn = localStorage.getItem('bn_pre') === '1';
-  preloadN = Math.min(8, Math.max(1, +(localStorage.getItem('bn_pren') || 3)));
-}catch(e){}
+
 var pendingChunks = {}, inflight = 0, needsBake = false, chunkWorker = null;
 
 function K(x,y,z){ return x+","+y+","+z; }
@@ -30,6 +26,8 @@ function rnd(x,y,z,s){
 }
 
 // ---------- materiais ----------
+var TRANSP = {water:1, glass:1}; // resto é opaco
+function isOpaque(b){ return !!b && !TRANSP[b]; }
 var texCache = {};
 function tex(n, opt){
   var ck = n + JSON.stringify(opt||{});
@@ -39,15 +37,16 @@ function tex(n, opt){
   var m = new THREE.MeshLambertMaterial(Object.assign({map:t}, opt||{}));
   texCache[ck] = m; return m;
 }
-function matFor(b){
-  if(b==="grass") return [tex("grass_dirt"),tex("grass_dirt"),tex("grass"),tex("dirt"),tex("grass_dirt"),tex("grass_dirt")];
-  if(b==="wood") return [tex("tree_side"),tex("tree_side"),tex("tree_top"),tex("tree_top"),tex("tree_side"),tex("tree_side")];
-  if(b==="leaves") return tex("leaves_opaque",{alphaTest:0.5, side:THREE.DoubleSide});
-  if(b==="glass") return tex("glass",{transparent:true, opacity:0.55});
-  if(b==="water") return tex("water",{transparent:true, opacity:0.75});
-  return tex(b);
+// slot: side/top/bot (bloco de 1 textura usa o mesmo nos 3)
+function slotMats(b){
+  if(b==="grass") return {side:tex("grass_dirt"), top:tex("grass"), bot:tex("dirt")};
+  if(b==="wood") return {side:tex("tree_side"), top:tex("tree_top"), bot:tex("tree_top")};
+  if(b==="leaves") return {side:tex("leaves_opaque"), top:tex("leaves_opaque"), bot:tex("leaves_opaque")};
+  if(b==="glass") return {side:tex("glass",{transparent:true,opacity:0.55}), top:tex("glass",{transparent:true,opacity:0.55}), bot:tex("glass",{transparent:true,opacity:0.55})};
+  if(b==="water") return {side:tex("water",{transparent:true,opacity:0.75}), top:tex("water",{transparent:true,opacity:0.75}), bot:tex("water",{transparent:true,opacity:0.75})};
+  var m = tex(b); return {side:m, top:m, bot:m};
 }
-
+function slotFor(dir){ return dir==='+y' ? 'top' : (dir==='-y' ? 'bot' : 'side'); }
 // ---------- terreno (fallback sync; worker tem cópia) ----------
 function gh(x,z){
   var seedF = SEED*0.001;
@@ -113,39 +112,76 @@ function updateChunkStatus(){
   var st = document.getElementById('stChunk'); if(!st) return;
   var left = chunkQueue.length + inflight;
   var txt = left>0 ? ('gerando chunks... ('+left+' na fila)')
-    : ('chunks '+knownChunks.size+' prontos ('+realR+'R)'+(optOn?' +vis'+optR:''));
+    : ('chunks '+knownChunks.size+' prontos ('+realR+'R)');
   if(txt !== _lastStTxt){ _lastStTxt = txt; st.textContent = txt; }
 }
 
-// ---------- bake POR CHUNK (nunca o mundo todo de uma vez) ----------
+// ---------- bake POR CHUNK: só faces visíveis, 1 mesh/chunk, culling real ----------
+// tabelas verificadas: (B-A)x(C-A) == normal
+var FACES = [
+  {d:'+x', n:[1,0,0],  o:[1,0,0],  v:[[1,0,1],[1,0,0],[1,1,0],[1,1,1]]},
+  {d:'-x', n:[-1,0,0], o:[-1,0,0], v:[[0,0,0],[0,0,1],[0,1,1],[0,1,0]]},
+  {d:'+y', n:[0,1,0],  o:[0,1,0],  v:[[0,1,0],[0,1,1],[1,1,1],[1,1,0]]},
+  {d:'-y', n:[0,-1,0], o:[0,-1,0], v:[[0,0,0],[1,0,0],[1,0,1],[0,0,1]]},
+  {d:'+z', n:[0,0,1],  o:[0,0,1],  v:[[0,0,1],[1,0,1],[1,1,1],[0,1,1]]},
+  {d:'-z', n:[0,0,-1], o:[0,0,-1], v:[[1,0,0],[0,0,0],[0,1,0],[1,1,0]]}
+];
+var FACE_UV = [0,0, 1,0, 1,1, 0,1];
 function chunkId(cx,cz){ return cx+","+cz; }
 function disposeChunkMeshes(id){
-  var arr = chunkMeshes[id]; if(!arr) return;
-  arr.forEach(function(m){ scene.remove(m); if(m.dispose) m.dispose(); });
+  var m = chunkMeshes[id]; if(!m) return;
+  scene.remove(m); if(m.geometry) m.geometry.dispose();
   delete chunkMeshes[id];
-}
-function visibleInChunk(x,y,z){
-  return !(getS(x+1,y,z)&&getS(x-1,y,z)&&getS(x,y+1,z)&&getS(x,y-1,z)&&getS(x,y,z+1)&&getS(x,y,z-1));
 }
 function bakeChunk(cx,cz){
   var id = chunkId(cx,cz);
   disposeChunkMeshes(id);
-  if(!sharedGeo) sharedGeo = new THREE.BoxGeometry(1,1,1);
-  var byType = {}, x, y, z;
+  var groups = {}; // "tipo:slot" -> {mat, pos, nor, uv, idx}
+  var x, y, z, f, nb, key, g;
   for(x=cx*CS;x<cx*CS+CS;x++) for(z=cz*CS;z<cz*CS+CS;z++) for(y=0;y<72;y++){
     var b = world.get(K(x,y,z)); if(!b) continue;
-    if(!visibleInChunk(x,y,z)) continue;
-    (byType[b]=byType[b]||[]).push([x,y,z]);
+    var mats = slotMats(b);
+    for(f=0;f<6;f++){
+      var F = FACES[f];
+      nb = world.get(K(x+F.o[0], y+F.o[1], z+F.o[2]));
+      if(isOpaque(nb)) continue;              // vizinho opaco esconde
+      if(nb === b) continue;                  // mesmo tipo (água/água, vidro/vidro) esconde
+      if(!TRANSP[b] && nb && TRANSP[nb]){ /* sólido ao lado de água: desenha */ }
+      key = b + ':' + slotFor(F.d);
+      g = groups[key];
+      if(!g){ g = groups[key] = {mat:mats[slotFor(F.d)], pos:[], nor:[], uv:[], idx:[]}; }
+      var base = g.pos.length/3, v;
+      for(v=0;v<4;v++){
+        g.pos.push(x+F.v[v][0], y+F.v[v][1], z+F.v[v][2]);
+        g.nor.push(F.n[0], F.n[1], F.n[2]);
+        g.uv.push(FACE_UV[v*2], FACE_UV[v*2+1]);
+      }
+      g.idx.push(base, base+1, base+2, base, base+2, base+3);
+    }
   }
-  var out = [], M = new THREE.Matrix4();
-  Object.keys(byType).forEach(function(bt){
-    var arr = byType[bt];
-    var m = new THREE.InstancedMesh(sharedGeo, matFor(bt), arr.length);
-    m.frustumCulled = false; // bounds da geo unitária quebrariam o culling
-    arr.forEach(function(p,i){ M.makeTranslation(p[0]+0.5, p[1]+0.5, p[2]+0.5); m.setMatrixAt(i, M); });
-    m.instanceMatrix.needsUpdate = true; scene.add(m); out.push(m);
-  });
-  if(out.length) chunkMeshes[id] = out;
+  var keys = Object.keys(groups);
+  if(!keys.length) return;
+  var geo = new THREE.BufferGeometry(), matsArr = [], start = 0, k;
+  var P = [], N = [], U = [], I = [];
+  for(k=0;k<keys.length;k++){
+    g = groups[keys[k]];
+    var vc = g.pos.length/3;
+    for(var i=0;i<g.pos.length;i++) P.push(g.pos[i]);
+    for(var j=0;j<g.nor.length;j++) N.push(g.nor[j]);
+    for(var u=0;u<g.uv.length;u++) U.push(g.uv[u]);
+    for(var w=0;w<g.idx.length;w++) I.push(g.idx[w]+start);
+    geo.addGroup(start === 0 ? 0 : I.length - g.idx.length, g.idx.length, k);
+    matsArr.push(g.mat);
+    start += vc;
+  }
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+  geo.setIndex(I);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx*CS+8, 24, cz*CS+8), 46);
+  var mesh = new THREE.Mesh(geo, matsArr.length === 1 ? matsArr[0] : matsArr);
+  scene.add(mesh);
+  chunkMeshes[id] = mesh;
 }
 function rebakeAround(x,z){
   var cx = Math.floor(x/CS), cz = Math.floor(z/CS);
@@ -156,45 +192,6 @@ function rebakeAround(x,z){
   if(lz===0) bakeChunk(cx,cz-1);
   if(lz===CS-1) bakeChunk(cx,cz+1);
 }
-function bakeFar(){
-  var cc0 = Math.floor(px/CS)+","+Math.floor(pz/CS)+"|"+(optOn?optR:0);
-  if(cc0 === bakeFar._cc && farMesh) return; bakeFar._cc = cc0;
-  if(farMesh){ scene.remove(farMesh); if(farMesh.dispose) farMesh.dispose(); farMesh = null; }
-  if(!optOn) return;
-  if(!farGeo) farGeo = new THREE.BoxGeometry(4,3,4);
-  if(!bakeFar._mat){
-    var gT = new THREE.TextureLoader().load("./assets/textures/grass.png");
-    gT.magFilter = THREE.NearestFilter; gT.minFilter = THREE.NearestFilter; gT.generateMipmaps = false;
-    gT.wrapS = gT.wrapT = THREE.RepeatWrapping; gT.repeat.set(4,4);
-    var dT = new THREE.TextureLoader().load("./assets/textures/grass_dirt.png");
-    dT.magFilter = THREE.NearestFilter; dT.minFilter = THREE.NearestFilter; dT.generateMipmaps = false;
-    dT.wrapS = dT.wrapT = THREE.RepeatWrapping; dT.repeat.set(4,1);
-    var sdM = new THREE.MeshLambertMaterial({map:dT});
-    bakeFar._mat = [sdM,sdM,new THREE.MeshLambertMaterial({map:gT}),sdM,sdM,sdM];
-  }
-  var ccx = Math.floor(px/CS), ccz = Math.floor(pz/CS), cells = [];
-  for(var dx=-optR;dx<=optR;dx++) for(var dz=-optR;dz<=optR;dz++){
-    if(Math.max(Math.abs(dx),Math.abs(dz)) <= realR) continue;
-    for(var ax=0;ax<CS;ax+=4) for(var az=0;az<CS;az+=4){
-      var wx = (ccx+dx)*CS+ax, wz = (ccz+dz)*CS+az;
-      var h = (gh(wx,wz)+gh(wx+3,wz)+gh(wx,wz+3)+gh(wx+3,wz+3))/4;
-      cells.push([wx+2, h, wz+2]);
-    }
-  }
-  if(!cells.length) return;
-  farMesh = new THREE.InstancedMesh(farGeo, bakeFar._mat, cells.length);
-  farMesh.frustumCulled = false;
-  var M = new THREE.Matrix4(), C = new THREE.Color();
-  cells.forEach(function(cc,i){
-    M.makeTranslation(cc[0], Math.floor(cc[1])-1.5, cc[2]); farMesh.setMatrixAt(i, M);
-    var v = 0.88 + rnd(cc[0]|0, cc[1]|0, cc[2]|0, SEED+3)*0.12;
-    farMesh.setColorAt(i, C.setRGB(v,v,v));
-  });
-  farMesh.instanceMatrix.needsUpdate = true;
-  if(farMesh.instanceColor) farMesh.instanceColor.needsUpdate = true;
-  scene.add(farMesh);
-}
-bakeFar._cc = "";
 // ---------- stream ----------
 function chunksAround(r){
   var ccx = Math.floor(px/CS), ccz = Math.floor(pz/CS), out = [];
@@ -243,8 +240,8 @@ function stream(){
       genSync(+p2[0], +p2[1]); bakeChunk(+p2[0], +p2[1]); did++;
     }
   }
-  if(id !== stream._lucc){ // descarrega SÓ ao trocar de chunk central (evita varrer o mundo todo tick)
-    stream._lucc = id;
+  if(id !== stream._lucc || realR !== stream._lR){ // centro OU raio mudou
+    stream._lucc = id; stream._lR = realR;
     Object.keys(pendingChunks).forEach(function(pid){
       if(!want[pid]){ delete pendingChunks[pid]; inflight = Math.max(0, inflight-1); }
     });
@@ -252,7 +249,6 @@ function stream(){
     clearFar(cs);
   }
   ensureGround();
-  bakeFar();
   updateChunkStatus();
 }
 
@@ -393,27 +389,14 @@ function preloadShort(done){
   });
 }
 function wireSettings(){
-  var r = document.getElementById("rgReal"), o = document.getElementById("ckOpt"),
-      ro = document.getElementById("rgOpt"), box = document.getElementById("rgOptBox");
-  var cp = document.getElementById("ckPre"), rp = document.getElementById("rgPre"),
-      pbox = document.getElementById("rgPreBox");
-  if(cp){ cp.checked = preloadOn; rp.value = preloadN; }
+  var r = document.getElementById("rgReal");
   function sync(){
-    realR = Math.min(32, Math.max(1, +r.value));
-    optOn = o.checked; optR = Math.min(32, Math.max(1, +ro.value));
+    realR = Math.min(16, Math.max(1, +r.value));
     document.getElementById("vReal").textContent = realR;
-    document.getElementById("vOpt").textContent = optR;
-    box.style.display = optOn ? "block" : "none";
-    if(cp){
-      preloadOn = cp.checked; preloadN = Math.min(8, Math.max(1, +rp.value));
-      document.getElementById("vPre").textContent = preloadN;
-      pbox.style.display = preloadOn ? "block" : "none";
-      try{ localStorage.setItem('bn_pre', preloadOn ? '1' : '0'); localStorage.setItem('bn_pren', preloadN); }catch(e){}
-    }
+    chunkQueue.length = 0; // descarta fila do raio antigo
     lastCC = "";
   }
-  r.oninput = sync; o.onchange = sync; ro.oninput = sync; sync();
-  if(cp){ cp.onchange = sync; rp.oninput = sync; sync(); }
+  r.oninput = sync; sync();
 }
 function waitChunks(list, onProg){
   list.forEach(function(c){
@@ -563,7 +546,7 @@ function init(){
     var ld = document.getElementById("load"); ld.style.display = "flex";
     dbLoadEdits(w.id).then(function(rows){
       rows.forEach(function(r){ edits.set(r.xyz, r.b); });
-      var waitR = preloadOn ? Math.max(realR, preloadN) : realR;
+      var waitR = realR;
       var ccx0 = Math.floor(px/CS), ccz0 = Math.floor(pz/CS), cl = [];
       for(var ix=-waitR;ix<=waitR;ix++) for(var iz=-waitR;iz<=waitR;iz++) cl.push([ccx0+ix, ccz0+iz]);
       var lp = document.querySelector("#load p"), lf = document.querySelector("#load .fill");
@@ -677,7 +660,7 @@ function init(){
       renderer.render(scene, camera);
       var d = document.getElementById("dbg");
       if(!d.classList.contains("hidden"))
-        d.textContent = "XYZ "+px.toFixed(1)+" "+py.toFixed(1)+" "+pz.toFixed(1)+"\nchunks "+chunksAround(realR).length+"R"+realR+(optOn?" +vis"+optR:"")+"\nF5 cam F3 debug B blocos";
+        d.textContent = "XYZ "+px.toFixed(1)+" "+py.toFixed(1)+" "+pz.toFixed(1)+"\nchunks "+chunksAround(realR).length+"R"+realR+"\nF5 cam F3 debug B blocos";
     })(last);
   })();
 }
