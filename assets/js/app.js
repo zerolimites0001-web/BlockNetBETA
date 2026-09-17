@@ -160,7 +160,7 @@ function bakeChunk(cx,cz){
       if(Math.floor(nx2/CS)===cx && Math.floor(nz2/CS)===cz){ nb = cm0.get(lk(nx2,ny2,nz2)) || null; }
       else { nb = get(nx2,ny2,nz2); }
       if(isOpaque(nb)) continue;              // vizinho opaco esconde
-      if(nb === b) continue;                  // mesmo tipo (água/água, vidro/vidro) esconde
+      if(nb === b && b !== 'leaves') continue; // mesmo tipo esconde (folha desenha tudo: sem buraco lateral)
       if(!TRANSP[b] && nb && TRANSP[nb]){ /* sólido ao lado de água: desenha */ }
       key = b + ':' + slotFor(F.d);
       g = groups[key];
@@ -218,7 +218,7 @@ function clearFar(){
 }
 function ensureGround(){
   var fx = Math.floor(px), fz = Math.floor(pz), guard = 0;
-  while((getS(fx,Math.floor(py),fz)||getS(fx,Math.floor(py+1.6),fz)) && guard++<60) py += 1;
+  while(getS(fx,Math.floor(py),fz) && guard++<60) py += 0.2; // só pé enterrado sobe (cabeça não conta: folha/teto lançava o player)
   guard = 0;
   while(!getS(fx,Math.floor(py)-1,fz) && guard++<60 && py>2) py -= 1;
   if(!getS(fx,Math.floor(py)-1,fz)) py += 3;
