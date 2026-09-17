@@ -1,0 +1,19 @@
+/* BlockNet HUD touch */
+#hud{position:fixed;inset:auto 0 0 0;z-index:40;display:flex;justify-content:space-between;align-items:flex-end;padding:8px 10px calc(74px + env(safe-area-inset-bottom));pointer-events:none}
+#hud .dpad{display:grid;grid-template-columns:56px 56px 56px;grid-template-rows:56px 56px;gap:6px;pointer-events:auto}
+#hud .btns{display:flex;gap:8px;pointer-events:auto}
+#hud button{border:2px solid #000;outline:2px solid rgba(255,255,255,.6);background:rgba(60,60,60,.72);color:#fff;font-size:13px;font-family:"MC",monospace;text-shadow:2px 2px 0 #222;border-radius:4px;min-width:56px;min-height:56px;touch-action:none}
+#hud button:active{background:rgba(120,120,120,.85)}
+#hud .btns button{border-radius:4px;width:58px;height:52px}
+#hud .dpad button{font-size:18px}
+@media (hover:hover) and (pointer:fine){#hud{display:none}}
+
+@media (orientation:landscape){
+  #hud{padding:6px 8px calc(66px + env(safe-area-inset-bottom))}
+  #hud .dpad{grid-template-columns:44px 44px 44px;grid-template-rows:44px 44px;gap:4px}
+  #hud button{min-width:44px;min-height:44px;font-size:11px}
+  #hud .btns{flex-direction:row;flex-wrap:wrap;justify-content:flex-end;max-width:38vw}
+  #hud .btns button{width:48px;height:44px}
+  #hotbar{bottom:auto;top:calc(8px + env(safe-area-inset-top));transform:translateX(-50%) scale(.85)}
+  #set{top:auto;bottom:calc(120px + env(safe-area-inset-bottom));right:8px}
+}
