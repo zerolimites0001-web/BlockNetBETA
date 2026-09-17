@@ -98,11 +98,17 @@ function bootWorker(){
       knownChunks.add(id); needsBake = true;
     }
     updateChunkStatus();
-    if(needsBake && inflight===0){ needsBake = false; bake(); }
+    if(needsBake){ needsBake = false; requestBake(); }
   };
   chunkWorker.onerror = function(){ chunkWorker = null; };
 }
 function genSync(cx,cz){ fillChunkWithEdits(cx,cz); knownChunks.add(cx+','+cz); }
+var lastBakeT = 0, bakeTimer = null;
+function requestBake(){
+  var now = performance.now();
+  if(now - lastBakeT > 400){ lastBakeT = now; bake(); }
+  else if(!bakeTimer){ bakeTimer = setTimeout(function(){ bakeTimer = null; lastBakeT = performance.now(); bake(); }, 400); }
+}
 function updateChunkStatus(){
   var st = document.getElementById('stChunk'); if(!st) return;
   var left = chunkQueue.length + inflight;
@@ -224,7 +230,7 @@ function stream(){
   Array.from(knownChunks).forEach(function(kid){ if(!want[kid]) knownChunks.delete(kid); });
   clearFar(cs);
   ensureGround();
-  if(needsBake && inflight === 0){ needsBake = false; bake(); }
+  if(needsBake){ needsBake = false; requestBake(); }
   else if(!Object.keys(imeshes).length && knownChunks.size) bake();
   else bakeFar();
   updateChunkStatus();
