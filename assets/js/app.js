@@ -371,22 +371,25 @@ function bakeChunk(cx,cz){
   var keys = Object.keys(groups);
   if(!keys.length) return;
   var geo = new THREE.BufferGeometry(), matsArr = [], start = 0, k;
-  var P = [], N = [], U = [], I = [];
+  // tamanho exato: 1 alocacao por atributo (sem push/concat que da GC spike)
+  var nP = 0, nI = 0;
+  for(k=0;k<keys.length;k++){ g = groups[keys[k]]; nP += g.pos.length; nI += g.idx.length; }
+  var P = new Float32Array(nP), N = new Float32Array(nP), U = new Float32Array(nP/3*2);
+  var I = (nP/3 > 65535) ? new Uint32Array(nI) : new Uint16Array(nI);
+  var oP = 0, oU = 0, oI = 0;
   for(k=0;k<keys.length;k++){
     g = groups[keys[k]];
     var vc = g.pos.length/3;
-    for(var i=0;i<g.pos.length;i++) P.push(g.pos[i]);
-    for(var j=0;j<g.nor.length;j++) N.push(g.nor[j]);
-    for(var u=0;u<g.uv.length;u++) U.push(g.uv[u]);
-    for(var w=0;w<g.idx.length;w++) I.push(g.idx[w]+start);
-    geo.addGroup(start === 0 ? 0 : I.length - g.idx.length, g.idx.length, k);
+    P.set(g.pos, oP); N.set(g.nor, oP); U.set(g.uv, oU);
+    for(var w=0;w<g.idx.length;w++) I[oI+w] = g.idx[w]+start;
+    geo.addGroup(oI, g.idx.length, k);
     matsArr.push(g.mat);
-    start += vc;
+    start += vc; oP += g.pos.length; oU += g.uv.length; oI += g.idx.length;
   }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
-  geo.setIndex(I);
+  geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(U, 2));
+  geo.setIndex(new THREE.BufferAttribute(I, 1));
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
   // esfera manual: centro do chunk + raio que cobre altura maxima (V2 alto)
@@ -423,12 +426,33 @@ function chunksAround(r){
 function clearFar(){
   // restos caem no unload do stream (delete chunks[id]); aqui só garantia
 }
+var lastLandT = 0; // ultima vez que o loop confirmou pe no chao
 function ensureGround(){
+  if(vy !== 0 && vy !== undefined) { /* caindo/pulando: so corrige se ENTERRADO */
+    var _fx = Math.floor(px), _fz = Math.floor(pz);
+    var _buried = false;
+    try{ _buried = !!getS(_fx, Math.floor(py-0.05), _fz); }catch(e){}
+    if(!_buried) return; // caindo no ar: NAO encosta (era o teleporte na queda)
+    // enterrado mesmo caindo: sobe ate sair (anti-fall-through)
+    var _g = 0; while(_buried && _g++<60){ py += 0.2; try{ _buried = !!getS(_fx, Math.floor(py-0.05), _fz); }catch(e){ break; } }
+    py = Math.floor(py-0.05)+1.01; vy = 0;
+    return;
+  }
+  var m = null;
+  try{ m = cmap(Math.floor(px), Math.floor(pz), false); }catch(e){}
+  if(!m) return; // chunk sem dados: NAO mexe no py (era esse o nascer embaixo do chao)
+  var m = null;
+  try{ m = cmap(Math.floor(px), Math.floor(pz), false); }catch(e){}
+  if(!m) return; // chunk sem dados: NAO mexe no py (era esse o nascer embaixo do chao)
   var fx = Math.floor(px), fz = Math.floor(pz), guard = 0;
-  while(getS(fx,Math.floor(py),fz) && guard++<60) py += 0.2; // só pé enterrado sobe (cabeça não conta: folha/teto lançava o player)
-  guard = 0;
-  while(!getS(fx,Math.floor(py)-1,fz) && guard++<60 && py>2) py -= 1;
-  if(!getS(fx,Math.floor(py)-1,fz)) py += 3;
+  while(getS(fx,Math.floor(py-0.05),fz) && guard++<60) py += 0.2; // pe enterrado sobe
+  guard = 0; var found = !!getS(fx,Math.floor(py-0.05)-1,fz);
+  while(!found && guard++<80 && py>2){ py -= 1; if(getS(fx,Math.floor(py-0.05)-1,fz)){ found = true; break; } }
+  if(!found){ // nada embaixo: procura solido p/ CIMA (spawn em caverna/ar), nunca p/ baixo
+    for(var y=Math.floor(py); y<140; y++){ if(getS(fx,y,fz)){ py = y+1.01; break; } }
+    return;
+  }
+  py = Math.floor(py-0.05)+1.01; // snap exato no chao (igual fisica)
 }
 var bakeQueue = []; // ids "cx,cz" aguardando bake (escalonado no loop)
 var queueSet = {}; // dedup O(1) da chunkQueue (indexOf era O(n))
@@ -443,19 +467,14 @@ function sortQueue(ccx,ccz){ // perto primeiro: centro aparece rapido
 var __bakeBudget = 10; // ms por frame: chunk aparece rapido
 var __lastFps = 60;
 var __frameN = 0;
-function pumpBakes(n){ // n bakes por frame + orcamento adaptativo: nunca congela
-  var t0 = performance.now(), did = 0;
-  var budget = (__lastFps < 20) ? 3 : __bakeBudget;
-  var maxN = (__lastFps < 20) ? 1 : n;
-  while(bakeQueue.length && did < maxN){
-    var id = bakeQueue.shift();
-    if(!knownChunks.has(id)) continue;
-    var pp = id.split(",");
-    try{ bakeChunk(+pp[0], +pp[1]); }catch(e){}
-    bakedSet[id] = 1; did++;
-    if(performance.now()-t0 > budget) break;
-  }
-  return did;
+function pumpBakes(n){ // 1 bake/frame SEMPRE (sem shift em lote, sem budget estourado): nunca trava GPU
+  if(!bakeQueue.length) return 0;
+  var id = bakeQueue.shift();
+  if(!knownChunks.has(id)) return 0;
+  var pp = id.split(",");
+  try{ bakeChunk(+pp[0], +pp[1]); }catch(e){}
+  bakedSet[id] = 1;
+  return 1;
 }
 var bakedSet = {}; // ids ja com mesh (load conta isso, nao so recebido)
 function stream(force){
@@ -749,6 +768,51 @@ window.__BN = {
   THREE: function(){ return THREE; },
   scene: function(){ return scene; }, camera: function(){ return camera; }, renderer: function(){ return renderer; },
   get: function(x,y,z){ return get(x,y,z); }, set: function(x,y,z,b){ return setB(x,y,z,b); },
+  blast: function(x,y,z,r){ // explosao ASSINCRONA fatiada: apaga aos poucos, rebake na fila (zero freeze, zero chao preto)
+    x|=0; y|=0; z|=0; r=r||2;
+    var cells = [];
+    for(var dx=-r;dx<=r;dx++) for(var dy=-r;dy<=r;dy++) for(var dz=-r;dz<=r;dz++){
+      if(dx*dx+dy*dy+dz*dz > r*r+1) continue;
+      cells.push([x+dx, y+dy, z+dz]);
+    }
+    var dirty = {}, i = 0;
+    function slice(){
+      var n = 0;
+      while(i < cells.length && n < 8){ // 8 blocos/frame: nem sente
+        var c = cells[i++]; n++;
+        try{
+          var prev = get(c[0],c[1],c[2]);
+          if(prev && prev!=="air" && prev!=="bedrock"){
+            var kk = K(c[0],c[1],c[2]);
+            delB(c[0],c[1],c[2]);
+            lastBType[kk] = prev;
+            if(WORLD_ID){ edits.set(kk, null); idxEdit(kk, null); }
+            var cid = ckOf(c[0],c[2]); dirty[cid] = 1;
+          }
+        }catch(e){}
+      }
+      if(i < cells.length){ setTimeout(slice, 16); return; }
+      // terminou: 1 escrita no banco (transacao unica) + rebake via FILA (1/frame, sem freeze)
+      try{
+        if(WORLD_ID){
+          db().then(function(d){
+            try{
+              var t = d.transaction("edits","readwrite").objectStore("edits");
+              cells.forEach(function(c){
+                var k2 = K(c[0],c[1],c[2]);
+                if(edits.get(k2)===null) t.put({k:WORLD_ID+":"+k2, wid:WORLD_ID, xyz:k2, b:null});
+              });
+            }catch(e){}
+          });
+          saveMeta();
+        }
+      }catch(e){}
+      Object.keys(dirty).forEach(function(cid){
+        try{ delete bakedSet[cid]; if(bakeQueue.indexOf(cid)<0) bakeQueue.push(cid); }catch(e){}
+      });
+    }
+    slice();
+  },
   rebake: function(x,z){ return rebakeAround(x,z); },
   bakeChunk: function(cx,cz){ return bakeChunk(cx,cz); },
   FACES: FACES, chunks: chunks, chunkMeshes: chunkMeshes,
@@ -756,7 +820,51 @@ window.__BN = {
   setRender: function(r){ try{ realR = Math.max(1, Math.min(16, r|0)); var rg = document.getElementById('rgReal'); if(rg) rg.value = realR; var v = document.getElementById('vReal'); if(v) v.textContent = realR; lastCC=''; stream(true); }catch(e){} },
   player: { get x(){return px;}, set x(v){px=v;}, get y(){return py;}, set y(v){py=v;}, get z(){return pz;}, set z(v){pz=v;} },
   on: function(ev, fn){ document.addEventListener('bn:'+ev, fn); },
-  emit: function(ev, d){ document.dispatchEvent(new CustomEvent('bn:'+ev, {detail:d})); }
+  emit: function(ev, d){ document.dispatchEvent(new CustomEvent('bn:'+ev, {detail:d})); },
+  // entidades 3D externas (GLB/GLTF/OBJ/FBX): rastreadas p/ remocao e save
+  _ents: {},
+  spawnModel: function(url, opt){
+    // opt: {x,y,z, scale, ry, name} — detecta tipo pela extensao
+    opt = opt||{};
+    var self = this;
+    var ext = String(url).split('.').pop().split('?')[0].toLowerCase();
+    function put(obj){
+      obj.position.set(opt.x!==undefined?opt.x:px+2, opt.y!==undefined?opt.y:py+1, opt.z!==undefined?opt.z:pz);
+      var s = opt.scale||1; obj.scale.set(s,s,s);
+      if(opt.ry) obj.rotation.y = opt.ry;
+      obj.frustumCulled = false;
+      scene.add(obj);
+      var id = 'ent_'+Date.now().toString(36)+((Math.random()*999)|0);
+      self._ents[id] = { obj: obj, url: url, clips: opt._clips||[], opt: {x:obj.position.x, y:obj.position.y, z:obj.position.z, scale:s, ry:opt.ry||0} };
+      return id;
+    }
+    return new Promise(function(res, rej){
+      try{
+        if(ext==='obj'){
+          new THREE.OBJLoader().load(url, function(o){ res(put(o)); }, undefined, function(e){ rej(e); });
+        } else if(ext==='fbx'){
+          new THREE.FBXLoader().load(url, function(o){ res(put(o)); }, undefined, function(e){ rej(e); });
+        } else { // glb/gltf — guarda clips p/ animacao
+          new THREE.GLTFLoader().load(url, function(g){
+            opt._clips = g.animations||[];
+            res(put(g.scene||g.scenes[0]));
+          }, undefined, function(e){ rej(e); });
+        }
+      }catch(e){ rej(e); }
+    });
+  },
+  removeModel: function(id){ try{ var e = this._ents[id]; if(e){ scene.remove(e.obj); delete this._ents[id]; return true; } }catch(_){} return false; },
+  listModels: function(){ var o = {}; for(var k in this._ents) o[k] = this._ents[k].opt; return o; },
+  // camera cinematica p/ mods: setCine(pos, look) assume, clearCine() devolve
+  _cine: null,
+  setCine: function(x,y,z, lx,ly,lz){ this._cine = {pos:[x,y,z], look:[lx,ly,lz]}; },
+  clearCine: function(){ this._cine = null; },
+  shake: function(amp, dur){ // tremor de tela p/ mods (amp em blocos, dur em ms)
+    this._shake = {amp:amp||0.4, dur:dur||800, until:performance.now()+(dur||800)};
+    if(this._cine) this._cine.shake = this._shake;
+  },
+  getView: function(){ return {yaw:yaw, pitch:pitch, third:third, x:px, y:py, z:pz}; },
+  setView: function(y,p){ if(y!==undefined) yaw=y; if(p!==undefined) pitch=Math.max(-1.5,Math.min(1.5,p)); }
 };
 window.__BlockAPI={
   get:function(x,y,z){ return get(x,y,z); },
@@ -836,7 +944,7 @@ function waitChunks(list, onProg){
     var finished = false;
     function tick(){
       if(finished) return;
-      pumpBakes(4); // bakeja antes de contar: barra so anda com mesh pronta
+      pumpBakes(1); // bakeja antes de contar: barra so anda com mesh pronta
       var have = 0, i;
       for(i=0;i<core.length;i++){ if(bakedSet[core[i][0]+','+core[i][1]]) have++; }
       // watchgod: se a contagem nao anda por 3s, o worker travou -> gera o resto no sync e sai
@@ -1006,7 +1114,7 @@ function init(){
         lp.textContent = "Gerando mundo... "+pc+"% ("+have+"/"+total+" chunks)";
         lf.style.width = pc+"%";
       }).then(function(){
-        pumpBakes(9999); // garante nucleo visivel (orcamento 12ms continua valendo)
+        pumpBakes(1); // nucleo em frames (sem travar)
         stream(true); // enfileira o resto do raio em background
         if(w.fresh){
           (function findLand(){
@@ -1019,7 +1127,15 @@ function init(){
             }
             if(ok){ px = fx+0.5; pz = fz+0.5; }
           })();
-          for(var y=140;y>0;y--){ if(getS(Math.floor(px),y,Math.floor(pz))){ py = y+1.01; break; } }
+          vy = 0; // garante: ensureGround nao recusa por vy sujo
+          // escaneia DIRETO nos dados (biomeAt e o solido real), nao no getS que pode estar vazio
+          var bi0 = biomeAt(Math.floor(px), Math.floor(pz), SEED);
+          var groundH = Math.floor(bi0.h);
+          // confirma com getS; se chunk ainda sem dados, usa biome como verdade
+          var yy, solidY = -1;
+          for(yy=140; yy>0; yy--){ var _b = getS(Math.floor(px),yy,Math.floor(pz)); if(_b){ solidY = yy; break; } }
+          if(solidY >= 0) groundH = solidY;
+          py = groundH+1.01;
           w.fresh = false; w.px = px; w.py = py; w.pz = pz; dbPutWorld(w);
         }
         ensureGround();
@@ -1196,7 +1312,7 @@ function showTitle(){
     var fpsEl = document.getElementById("fps"), fpsFrames = 0, fpsT = performance.now();
     (function loop(t){
       requestAnimationFrame(loop);
-      if(!WORLD_ID) pumpBakes(4); // load tambem bakeja: barra anda com mesh pronta antes do loop do mundo
+      if(!WORLD_ID) pumpBakes(1); // load tambem bakeja: barra anda com mesh pronta antes do loop do mundo
       var dt = Math.min(0.05, (t-last)/1000); last = t;
       fpsFrames++;
       var fnow = performance.now();
@@ -1241,15 +1357,23 @@ function showTitle(){
       } else {
         vy = Math.max(-18, vy-26*dt);
       }
+      // pe checa um fiapo ABAIXO (py-0.05): detecta o chao antes de afundar -> sem afunda-teleporta
+      function footSolid(ty){
+        return solidB(px+E,ty-0.05,pz)||solidB(px-E,ty-0.05,pz)||solidB(px,ty-0.05,pz+E)||solidB(px,ty-0.05,pz-E);
+      }
       var dy = vy*dt, sub = flyOn ? 1 : Math.max(1, Math.ceil(Math.abs(dy)/0.3)), landed = false, sk, ty;
-      for(sk=0;sk<sub;sk++){
+      if(!flyOn && vy<=0 && !keys.jump && footSolid(py) && Math.abs(py-(Math.floor(py-0.05)+1.01))<0.06){
+        py = Math.floor(py-0.05)+1.01; vy = 0; landed = true; // grudado: nem gravidade encosta
+        lastLandT = performance.now();
+      }
+      else for(sk=0;sk<sub;sk++){
         ty = py+dy/sub;
         if(flyOn){
           py = ty; landed=false; break;
         }
-        var hitF = solidB(px+E,ty,pz)||solidB(px-E,ty,pz)||solidB(px,ty,pz+E)||solidB(px,ty,pz-E);
+        var hitF = footSolid(ty);
         var hitH = solidB(px,ty+1.7,pz);
-        if(vy<=0 && hitF){ py = Math.floor(ty)+1.01; vy = 0; landed = true; break; }
+        if(vy<=0 && hitF){ py = Math.floor(ty-0.05)+1.01; vy = 0; landed = true; lastLandT = performance.now(); break; }
         else if(vy>0 && hitH){ vy = 0; py = ty; break; }
         else py = ty;
       }
@@ -1266,7 +1390,7 @@ function showTitle(){
       }
       if(window.ShaderSys) window.ShaderSys.tick(dt);
       __frameN++;
-      pumpBakes(2); // 2 bakes por frame: aparece rapido sem congelar muito
+      pumpBakes(1); // 1 bake/frame: sem spike de GPU
       if(unloadQueue.length){ // unload escalonado: 8/frame
         for(var ui=0; ui<8 && unloadQueue.length; ui++){
           var uk = unloadQueue.shift();
@@ -1275,9 +1399,30 @@ function showTitle(){
       }
       acc += dt; if(acc > 0.25){ acc = 0; stream(); }
       var e2 = eye(), d2 = dirV();
-      if(third) camera.position.set(e2.x-d2.x*5, e2.y-d2.y*5+1, e2.z-d2.z*5);
+      if(window.__BN._cine){ // cinematica de mod: interpola suave ate pos+olhar (+shake opcional)
+        var C = window.__BN._cine;
+        camera.position.x += (C.pos[0]-camera.position.x)*Math.min(1,dt*2.5);
+        camera.position.y += (C.pos[1]-camera.position.y)*Math.min(1,dt*2.5);
+        camera.position.z += (C.pos[2]-camera.position.z)*Math.min(1,dt*2.5);
+        if(C.shake && performance.now() < C.shake.until){
+          var s = C.shake.amp * ((C.shake.until-performance.now())/C.shake.dur);
+          camera.position.x += (Math.random()*2-1)*s;
+          camera.position.y += (Math.random()*2-1)*s;
+          camera.position.z += (Math.random()*2-1)*s;
+        }
+        camera.lookAt(C.look[0], C.look[1], C.look[2]);
+      }
+      else if(window.__BN._shake && performance.now() < window.__BN._shake.until){
+        // tremor fora da cinematica (1a pessoa): desloca e rotaciona a camera
+        var Sh = window.__BN._shake;
+        var s2 = Sh.amp * ((Sh.until-performance.now())/Sh.dur);
+        camera.position.x += (Math.random()*2-1)*s2;
+        camera.position.y += (Math.random()*2-1)*s2;
+        camera.rotation.z = (Math.random()*2-1)*s2*0.05;
+      }
+      else if(third) camera.position.set(e2.x-d2.x*5, e2.y-d2.y*5+1, e2.z-d2.z*5);
       else camera.position.copy(e2);
-      camera.rotation.order = "YXZ"; camera.rotation.y = yaw; camera.rotation.x = pitch;
+      if(!window.__BN._cine && !(window.__BN._shake && performance.now() < window.__BN._shake.until)){ camera.rotation.order = "YXZ"; camera.rotation.y = yaw; camera.rotation.x = pitch; }
       renderer.render(scene, camera);
       var d = document.getElementById("dbg");
       if(!d.classList.contains("hidden"))
