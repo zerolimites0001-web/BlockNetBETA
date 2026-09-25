@@ -10,7 +10,7 @@ python3 -m http.server 8080
 # abre http://localhost:8080
 ```
 
-Ou qualquer servidor estatico. Precisa internet pro JSZip (CDN).
+Ou qualquer servidor estatico. 100% offline (three + jszip em `assets/js/vendor/`).
 
 ## Estrutura
 
