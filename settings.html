@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>BlockNet — Editar HUD</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:#111;color:#fff;font-family:monospace;user-select:none}
+#phone{position:fixed;inset:0;background:linear-gradient(#87ceeb 62%,#6a8f5f 62%)}
+#phone .tag{position:absolute;top:6px;left:0;right:0;text-align:center;font-size:11px;text-shadow:2px 2px 0 #222;pointer-events:none}
+.hb{position:absolute;display:flex;align-items:center;justify-content:center;color:#fff;touch-action:none;border:3px solid #000}
+.hb.sel{outline:3px solid #ff0;z-index:10}
+.hb.dp{background:#c6c6c6;color:#222}
+.hb.ac{background:#2b2b2b}
+.hb svg{width:55%;height:55%;shape-rendering:crispEdges;pointer-events:none}
+#hbHot{position:absolute;display:flex;background:#222;padding:4px;border:3px solid #000;touch-action:none}
+#hbHot.sel{outline:3px solid #ff0;z-index:10}
+#hbHot .slot{width:34px;height:34px;background:#8b8b8b url("./assets/textures/grass.png") center/cover;border:2px solid #555;pointer-events:none}
+/* painel inferior (recolhivel p/ nao cobrir a tela) */
+#panel{position:fixed;left:0;right:0;bottom:0;background:#111;border-top:3px solid #555;padding:10px;z-index:20;transition:transform .2s}
+#panel.min{transform:translateY(calc(100% - 40px))}
+#minBtn{width:100%;background:#333;color:#fff;border:1px solid #666;padding:6px;font-family:inherit;font-size:12px}
+#panel .row{display:flex;gap:8px;margin-top:8px}
+#hint{font-size:11px;color:#ccc;margin-bottom:6px}
+#selName{font-size:12px;color:#ff0;margin-bottom:6px}
+.mcbtn{flex:1;background:#6f6f6f;border:2px solid #000;color:#fff;padding:12px;font-family:inherit;font-size:13px;cursor:pointer;text-align:center;text-decoration:none}
+.mcbtn.big{background:#5dff5d;color:#222}
+#panel label{display:flex;gap:8px;align-items:center;font-size:12px;margin:4px 0}
+#panel input[type=range]{flex:1}
+#panel b{min-width:48px;text-align:right}
+</style>
+</head>
+<body>
+<div id="phone"><div class="tag">arraste p/ mover • pinça p/ tamanho • toque p/ selecionar</div></div>
+<div id="panel">
+  <button id="minBtn">▼ recolher / ▲ abrir</button>
+  <div id="hint">Toque num botão p/ selecionar. Arraste com 1 dedo = move. Pinça (2 dedos) = tamanho dele.</div>
+  <div id="selName">selecionado: (toque num botão)</div>
+  <label>Opacidade <input id="sOp" type="range" min="0.2" max="1" step="0.05"><b id="sOpV"></b></label>
+  <div class="row"><button class="mcbtn big" id="bSave">SALVAR</button><button class="mcbtn" id="bReset">PADRÃO</button><a class="mcbtn" href="./index.html">VOLTAR</a></div>
+  <div class="row"><button class="mcbtn" id="bExp">⤓ EXPORTAR JSON</button><button class="mcbtn" id="bImp">⤒ IMPORTAR JSON</button></div>
+  <input type="file" id="fImp" accept=".json,application/json" style="display:none">
+  <small id="msg"></small>
+</div>
+<script>
+(function(){
+var KEY="blocknet_hud";
+// botoes: id, texto, tipo
+var P_JUMP='<svg viewBox="0 0 14 16"><path fill="#fff" d="M7 1 L13 8 L10 8 L10 15 L4 15 L4 8 L1 8 Z"/></svg>';
+var P_SNEAK='<svg viewBox="0 0 14 16"><path fill="#fff" d="M7 15 L1 8 L4 8 L4 1 L10 1 L10 8 L13 8 Z"/></svg>';
+var P_BRK='<svg viewBox="0 0 16 16"><path fill="#fff" d="M11 1 L13 1 L13 3 L12 4 L12 8 L13 8 L13 10 L12 10 L8 10 L7 10 L7 8 L8 8 L8 4 Z M7 11 L5 13 L3 13 L3 15 L5 15 L9 11 Z"/></svg>';
+var P_PLC='<svg viewBox="0 0 16 16"><path fill="#fff" d="M1 5 L15 5 L15 12 L1 12 Z M1 8 L15 8 M5 5 L5 8 M11 5 L11 8 M8 8 L8 12" stroke="#2b2b2b" stroke-width="1"/></svg>';
+var P_INV='<svg viewBox="0 0 14 14"><path fill="#fff" d="M6 1 L8 1 L8 6 L13 6 L13 8 L8 8 L8 13 L6 13 L6 8 L1 8 L1 6 L6 6 Z"/></svg>';
+var BTNS=[
+ {id:"f",t:"\u25B2",c:"dp"},{id:"b",t:"\u25BC",c:"dp"},{id:"l",t:"\u25C0",c:"dp"},{id:"r",t:"\u25B6",c:"dp"},
+ {id:"bJump",t:P_JUMP,c:"ac"},{id:"bSneak",t:P_SNEAK,c:"ac"},{id:"bBrk",t:P_BRK,c:"ac"},
+ {id:"bPlc",t:P_PLC,c:"ac"},{id:"bInv",t:P_INV,c:"ac"},{id:"bCam",t:"CAM",c:"ac"},{id:"bSet",t:"SET",c:"ac"},{id:"hotbar",t:"",c:"hb"}
+];
+// layout padrao em % da tela (x,y = centro, s = px)
+function defLayout(){
+  var W=innerWidth,H=innerHeight,o={};
+  o.f={x:16,y:72,s:56,op:1};o.b={x:16,y:88,s:56,op:1};o.l={x:6,y:80,s:56,op:1};o.r={x:26,y:80,s:56,op:1};
+  o.bJump={x:88,y:70,s:56,op:1};o.bSneak={x:88,y:82,s:56,op:1};o.bBrk={x:74,y:76,s:56,op:1};
+  o.bPlc={x:74,y:88,s:56,op:1};o.bInv={x:88,y:58,s:56,op:1};o.bCam={x:74,y:58,s:44,op:1};o.bSet={x:82,y:58,s:44,op:1};
+  o.hotbar={x:50,y:93,s:220,op:1};
+  return o;
+}
+var cfg={v:2,btns:defLayout()};
+try{var s=JSON.parse(localStorage.getItem(KEY)||"null");if(s&&s.btns)cfg=s;else if(s&&s.size)cfg={v:2,btns:defLayout()};}catch(e){}
+var phone=document.getElementById("phone"),els={},sel=null;
+function mk(b){
+  var d;
+  if(b.id==="hotbar"){d=document.createElement("div");d.id="hbHot";
+    for(var i=0;i<5;i++){var sl=document.createElement("div");sl.className="slot";d.appendChild(sl);}
+  } else {d=document.createElement("div");d.className="hb "+b.c;d.innerHTML=b.t;}
+  d.dataset.id=b.id;
+  phone.appendChild(d);els[b.id]=d;
+  d.addEventListener("pointerdown",function(e){select(b.id);try{d.setPointerCapture(e.pointerId);}catch(_){}});
+}
+BTNS.forEach(mk);
+function draw(){
+  var W=innerWidth,H=innerHeight;
+  BTNS.forEach(function(b){
+    var c=cfg.btns[b.id]||{x:50,y:50,s:56,op:1},d=els[b.id];
+    if(b.id==="hotbar"){
+      d.style.left=(c.x/100*W-c.s/2)+"px";d.style.top=(c.y/100*H-22)+"px";
+      d.style.width=c.s+"px";d.style.opacity=c.op;
+      var sls=d.querySelectorAll(".slot"),sw=Math.max(20,(c.s-16)/5);
+      for(var i=0;i<sls.length;i++){sls[i].style.width=sw+"px";sls[i].style.height=sw+"px";}
+      d.classList.toggle("sel",sel===b.id);return;
+    }
+    d.style.left=(c.x/100*W-c.s/2)+"px";d.style.top=(c.y/100*H-c.s/2)+"px";
+    d.style.width=c.s+"px";d.style.height=c.s+"px";d.style.opacity=c.op;
+    d.style.fontSize=(c.s*0.35)+"px";
+    d.classList.toggle("sel",sel===b.id);
+  });
+  if(sel){var c=cfg.btns[sel];document.getElementById("selName").textContent="selecionado: "+sel;
+    document.getElementById("sOp").value=c.op;document.getElementById("sOpV").textContent=Math.round(c.op*100)+"%";}
+}
+function select(id){sel=id;draw();}
+// gesto: 1 dedo move, 2 dedos pinca tamanho
+var pts={},pinD0=0,pinS0=0;
+phone.addEventListener("pointerdown",function(e){pts[e.pointerId]={x:e.clientX,y:e.clientY};
+  var k=Object.keys(pts);if(k.length===2&&sel){var a=pts[k[0]],b=pts[k[1]];pinD0=Math.hypot(a.x-b.x,a.y-b.y);pinS0=cfg.btns[sel].s;}});
+phone.addEventListener("pointermove",function(e){
+  if(!pts[e.pointerId])return;
+  var dx=e.clientX-pts[e.pointerId].x,dy=e.clientY-pts[e.pointerId].y;
+  pts[e.pointerId]={x:e.clientX,y:e.clientY};
+  var k=Object.keys(pts);
+  if(k.length===1&&sel){var c=cfg.btns[sel];c.x+=dx/innerWidth*100;c.y+=dy/innerHeight*100;
+    c.x=Math.max(0,Math.min(100,c.x));c.y=Math.max(0,Math.min(100,c.y));draw();}
+  else if(k.length===2&&sel){var a=pts[k[0]],b=pts[k[1]],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(pinD0>0){var c2=cfg.btns[sel];
+      if(sel==="hotbar")c2.s=Math.max(140,Math.min(420,pinS0*d/pinD0));
+      else c2.s=Math.max(28,Math.min(140,pinS0*d/pinD0));draw();}}
+});
+["pointerup","pointercancel"].forEach(function(ev){phone.addEventListener(ev,function(e){delete pts[e.pointerId];});});
+document.getElementById("sOp").addEventListener("input",function(e){if(!sel)return;cfg.btns[sel].op=+e.target.value;draw();});
+document.getElementById("bSave").onclick=function(){try{localStorage.setItem(KEY,JSON.stringify(cfg));document.getElementById("msg").textContent="✓ salvo!";}catch(e){document.getElementById("msg").textContent="erro: "+e;}};
+document.getElementById("bReset").onclick=function(){cfg={v:2,btns:defLayout()};sel=null;draw();try{localStorage.setItem(KEY,JSON.stringify(cfg));}catch(e){}};
+document.getElementById("bExp").onclick=function(){
+  var txt=JSON.stringify(cfg,null,2);
+  var blob=new Blob([txt],{type:"application/json"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="blocknet-hud.json";
+  document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},500);
+  document.getElementById("msg").textContent="✓ JSON exportado!";
+};
+document.getElementById("bImp").onclick=function(){document.getElementById("fImp").click();};
+document.getElementById("fImp").addEventListener("change",function(e){
+  var f=e.target.files[0];if(!f)return;
+  var rd=new FileReader();
+  rd.onload=function(){try{
+    var o=JSON.parse(rd.result);
+    if(!o||!o.btns)throw "JSON sem 'btns'";
+    var d=defLayout(),ok=0;
+    for(var k in d){if(o.btns[k]){var c=o.btns[k];
+      d[k]={x:+c.x||50,y:+c.y||50,s:Math.max(20,Math.min(500,+c.s||56)),op:Math.max(0.1,Math.min(1,+c.op||1))};ok++;}}
+    cfg={v:2,btns:d};sel=null;draw();
+    try{localStorage.setItem(KEY,JSON.stringify(cfg));}catch(_){}
+    document.getElementById("msg").textContent="✓ importado ("+ok+" botões)!";
+  }catch(err){document.getElementById("msg").textContent="✕ JSON inválido: "+err;}};
+  rd.readAsText(f);e.target.value="";
+});
+document.getElementById("minBtn").onclick=function(){document.getElementById("panel").classList.toggle("min");};
+addEventListener("resize",draw);
+draw();
+})();
+</script>
+</body>
+</html>

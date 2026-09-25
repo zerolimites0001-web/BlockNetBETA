@@ -1,0 +1,156 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Perlin Debug — montanhas reais</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#87ceeb}canvas{display:block;width:100%;height:100%}
+#top{position:fixed;top:6px;left:6px;background:#000c;color:#fff;padding:6px 8px;font:11px monospace;border-radius:6px;z-index:5}
+#dpad{position:fixed;bottom:14px;left:14px;width:132px;height:132px;user-select:none;touch-action:none;z-index:10}
+#dpad button{position:absolute;width:44px;height:44px;border-radius:10px;border:1px solid #fff3;background:#0007;color:#fff;font:18px monospace}
+#bF{left:44px;top:0} #bB{left:44px;top:88px} #bL{left:0;top:44px} #bR{left:88px;top:44px}
+#bU{position:fixed;right:16px;bottom:76px;width:52px;height:52px;border-radius:14px;border:1px solid #fff3;background:#0007;color:#fff;font:16px monospace;z-index:10}
+#bD{position:fixed;right:16px;bottom:14px;width:52px;height:38px;border-radius:10px;border:1px solid #fff3;background:#0007;color:#fff;font:14px monospace;z-index:10}
+#tele{position:fixed;top:6px;right:6px;background:#000c;color:#fff;padding:6px 8px;font:11px monospace;border-radius:6px;z-index:5}
+#tele button{background:#333;color:#fff;border:1px solid #666;padding:6px;font:11px monospace;border-radius:4px;margin-left:4px}
+</style>
+<script src="./assets/three.min.js"></script>
+<script src="./noisejs.js"></script>
+</head><body>
+<div id="top">vel <input id="spd" type="number" min="1" max="100" value="18" style="width:40px"> <button id="ok">OK</button> <span id="inf"></span></div>
+<div id="tele"><button id="bM">⛰ ir p/ montanha</button></div>
+<div id="dpad"><button id="bF">▲</button><button id="bL">◀</button><button id="bR">▶</button><button id="bB">▼</button></div>
+<button id="bU">⬆</button><button id="bD">⬇</button>
+<script>
+// ===== terreno (ESPELHO do worker.js — mesma lib noisejs, mesma seed, mesma formula) =====
+var NZ=new Noise(1337);
+function sFbm(x,y,oct){ var a=0.5,f=1,s=0,n=0; for(var i=0;i<oct;i++){ s+=a*NZ.simplex2(x*f,y*f); n+=a; a*=0.5; f*=2.02; } return s/n; }
+function pFbm(x,y,oct){ var a=0.5,f=1,s=0,n=0; for(var i=0;i<oct;i++){ s+=a*NZ.perlin2(x*f,y*f); n+=a; a*=0.5; f*=2.02; } return s/n; }
+function ridge(x,y,oct){ var a=0.5,f=1,s=0,n=0; for(var i=0;i<oct;i++){ var v=1-Math.abs(NZ.perlin2(x*f,y*f)); s+=a*v*v; n+=a; a*=0.5; f*=2.1; } return s/n; } // [0,1]
+function biomeAt(X,Z){
+  var plains = sFbm(X*0.004, Z*0.004, 3)*2.0;                 // simplex: planicie +-2.5
+  var mask = pFbm(X*0.00045+777, Z*0.00045-777, 2);             // perlin: mascara baixa freq
+  var m = Math.max(0,(mask+0.08)/0.30); m=Math.min(1,m); m=m*m*(3-2*m);
+  var r = ridge(X*0.0016+200, Z*0.0016-200, 4);                 // perlin ridged: crista
+  var det = NZ.simplex2(X*0.02-500, Z*0.02+500);           // simplex: detalhe
+  var mountH = r*60 + det*2.0;
+  var h = Math.floor(9 + plains*(1-m) + (plains+mountH)*m);
+  return h<4?4:h;
+}
+var flySpeed=18; try{flySpeed=parseInt(localStorage.getItem('flySpeed')||'18')}catch(_){} spd.value=flySpeed;
+ok.onclick=()=>{flySpeed=Math.max(1,Math.min(100,parseInt(spd.value)||12));try{localStorage.setItem('flySpeed',flySpeed)}catch(_){}spd.value=flySpeed};
+function tex(u){var t=new THREE.TextureLoader().load(u);t.magFilter=THREE.NearestFilter;t.minFilter=THREE.NearestFilter;return t}
+var tg=tex('./assets/textures/grass.png'), ts=tex('./assets/textures/stone.png');
+var scene=new THREE.Scene();scene.background=new THREE.Color(0x87ceeb);
+var camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,0.1,2000);
+var renderer=new THREE.WebGLRenderer({antialias:false, alpha:false, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.2));
+renderer.setSize(innerWidth,innerHeight);document.body.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff,0x555555,1.3));
+var dl=new THREE.DirectionalLight(0xffffff,0.8); dl.position.set(80,150,60); scene.add(dl);
+var worker=new Worker('./worker.js?v=3');
+var chunks=new Map(), pending=new Set();
+function k(cx,cz){return cx+','+cz}
+function req(cx,cz){var kk=k(cx,cz);if(chunks.has(kk)||pending.has(kk))return;pending.add(kk);worker.postMessage({type:'gen',cx,cz})}
+worker.onmessage=e=>{
+  var d=e.data; if(d.type!=='chunk')return; pending.delete(k(d.cx,d.cz));
+  var hm=new Map(); d.hs.forEach(v=>hm.set(v[0]+','+v[1],v[2]));
+  var P=[],U=[],I=[], G=[]; var idx=0;
+  function push(wx,y,wz,side,mat){
+    var x0=wx,x1=wx+1,y0=y,y1=y+1,z0=wz,z1=wz+1, vs;
+    if(side=='top') vs=[[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]];
+    else if(side=='north') vs=[[x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0]];
+    else if(side=='south') vs=[[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
+    else if(side=='west') vs=[[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0]];
+    else vs=[[x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1]];
+    vs.forEach(v=>P.push(v[0],v[1],v[2])); U.push(0,0,1,0,1,1,0,1); I.push(idx,idx+1,idx+2, idx,idx+2,idx+3); G.push({s:I.length-6,c:6,m:mat}); idx+=4;
+  }
+  d.hs.forEach(v=>{
+    var x=v[0],z=v[1],h=v[2],wx=d.cx*16+x,wz=d.cz*16+z;
+    var topMat = h>30 ? 1 : 0; // pico alto = pedra, baixo = grama
+    push(wx,h,wz,'top',topMat);
+    var hn=hm.get(x+','+(z+1)), hs=hm.get(x+','+(z-1)), he=hm.get((x+1)+','+z), hw=hm.get((x-1)+','+z);
+    if(hn===undefined) hn=h-1; if(hs===undefined) hs=h-1; if(he===undefined) he=h-1; if(hw===undefined) hw=h-1;
+    if(hn<h) for(var y=hn+1;y<=h;y++) push(wx,y,wz,'south',1);
+    if(hs<h) for(var y=hs+1;y<=h;y++) push(wx,y,wz,'north',1);
+    if(he<h) for(var y=he+1;y<=h;y++) push(wx,y,wz,'east',1);
+    if(hw<h) for(var y=hw+1;y<=h;y++) push(wx,y,wz,'west',1);
+  });
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  geo.setAttribute('uv',new THREE.Float32BufferAttribute(U,2));
+  geo.setIndex(I); geo.clearGroups();
+  var cur=-1,cs=0,cc=0; G.forEach(g=>{ if(g.m!==cur){ if(cur!==-1) geo.addGroup(cs,cc,cur); cur=g.m;cs=g.s;cc=g.c;} else cc+=g.c;});
+  if(cur!==-1) geo.addGroup(cs,cc,cur);
+  geo.computeVertexNormals();
+  var mg=new THREE.MeshLambertMaterial({map:tg, side:THREE.DoubleSide, transparent:false, depthWrite:true});
+  var ms=new THREE.MeshLambertMaterial({map:ts, side:THREE.DoubleSide, transparent:false, depthWrite:true});
+  var mesh=new THREE.Mesh(geo,[mg,ms]); mesh.frustumCulled=true; scene.add(mesh); chunks.set(k(d.cx,d.cz),mesh);
+  if(chunks.size>120){ var cx=Math.floor(pos.x/16),cz=Math.floor(pos.z/16);
+    for(var kk of Array.from(chunks.keys())){ var pp=kk.split(','),dx=Math.abs(+pp[0]-cx),dz=Math.abs(+pp[1]-cz); if(Math.max(dx,dz)>7){ var m=chunks.get(kk); scene.remove(m); m.geometry.dispose(); chunks.delete(kk);} } }
+  inf.textContent=chunks.size+' chunks';
+};
+var yaw=0,pitch=0,pos=new THREE.Vector3(0,70,0),keys={}, dpad={f:0,b:0,l:0,r:0,u:0,d:0};
+// acha pico alto perto do spawn e teleporta
+bM.onclick=()=>{
+  var best=0,bx=0,bz=0;
+  for(var r=100;r<4000;r+=100) for(var a=0;a<12;a++){
+    var x=Math.round(Math.cos(a/12*6.283)*r), z=Math.round(Math.sin(a/12*6.283)*r);
+    var h=biomeAt(x,z); if(h>best){best=h;bx=x;bz=z;}
+    if(best>35) break;
+  }
+  pos.set(bx+0.5,best+20,bz+0.5); cx0=999;
+  inf.textContent='pico '+best+' em '+bx+','+bz;
+};
+var touches=new Map();
+function isDpadEl(el){ return el===bF||el===bL||el===bR||el===bB||el===bU||el===bD; }
+function elToKey(el){ if(el===bF) return 'f'; if(el===bB) return 'b'; if(el===bL) return 'l'; if(el===bR) return 'r'; if(el===bU) return 'u'; if(el===bD) return 'd'; }
+function refreshDpad(){
+  dpad.f=dpad.b=dpad.l=dpad.r=dpad.u=dpad.d=0;
+  for(var el of touches.values()){ var k=elToKey(el); if(k) dpad[k]=1; }
+}
+['touchstart','touchmove'].forEach(ev=>{
+  document.addEventListener(ev,e=>{
+    for(var i=0;i<e.touches.length;i++){
+      var touch=e.touches[i], el=document.elementFromPoint(touch.clientX,touch.clientY);
+      if(isDpadEl(el)) touches.set(touch.identifier, el);
+      else if(touches.has(touch.identifier) && !isDpadEl(el)) touches.delete(touch.identifier);
+    }
+    if(touches.size) e.preventDefault();
+    refreshDpad();
+  },{passive:false});
+});
+document.addEventListener('touchend',e=>{
+  for(var i=0;i<e.changedTouches.length;i++) touches.delete(e.changedTouches[i].identifier);
+  refreshDpad();
+},{passive:false});
+document.addEventListener('touchcancel',e=>{
+  for(var i=0;i<e.changedTouches.length;i++) touches.delete(e.changedTouches[i].identifier);
+  refreshDpad();
+},{passive:false});
+[bF,bB,bL,bR,bU,bD].forEach(el=>{ el.addEventListener('mousedown',e=>{dpad[elToKey(el)]=1}); });
+addEventListener('mouseup',()=>{ if(touches.size===0) { dpad.f=dpad.b=dpad.l=dpad.r=dpad.u=dpad.d=0; } });
+addEventListener('keydown',e=>keys[e.code]=true); addEventListener('keyup',e=>keys[e.code]=false);
+var drag=false,lx=0,ly=0;
+renderer.domElement.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY});
+addEventListener('mouseup',()=>drag=false);
+addEventListener('mousemove',e=>{if(!drag)return; yaw-=(e.clientX-lx)*0.003; pitch-=(e.clientY-ly)*0.003; pitch=Math.max(-1.4,Math.min(1.4,pitch));lx=e.clientX;ly=e.clientY});
+renderer.domElement.addEventListener('touchstart',e=>{if(e.target.closest('#dpad')||e.target.closest('#bU')||e.target.closest('#bD')||e.target.closest('#top'))return; drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY},{passive:false});
+renderer.domElement.addEventListener('touchmove',e=>{if(!drag)return; if(e.target.closest('#dpad'))return; e.preventDefault();yaw-=(e.touches[0].clientX-lx)*0.003;pitch-=(e.touches[0].clientY-ly)*0.003;pitch=Math.max(-1.4,Math.min(1.4,pitch));lx=e.touches[0].clientX;ly=e.touches[0].clientY},{passive:false});
+addEventListener('touchend',()=>drag=false);
+var last=performance.now(), cx0=999,cz0=999;
+function upd(){var cx=Math.floor(pos.x/16),cz=Math.floor(pos.z/16);if(cx===cx0&&cz===cz0&&chunks.size>20)return;cx0=cx;cz0=cz;for(var dx=-5;dx<=5;dx++)for(var dz=-5;dz<=5;dz++)req(cx+dx,cz+dz)}
+(function loop(){requestAnimationFrame(loop);
+  var now=performance.now(),dt=Math.min(0.05,(now-last)/1000);last=now;
+  var sp=flySpeed*dt;
+  var f3=new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch));
+  var right=new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+  var mv=0,st=0;
+  if(keys['KeyW']||dpad.f) mv+=1; if(keys['KeyS']||dpad.b) mv-=1;
+  if(keys['KeyA']||dpad.l) st-=1; if(keys['KeyD']||dpad.r) st+=1;
+  if(mv) pos.addScaledVector(f3,sp*mv); if(st) pos.addScaledVector(right,sp*st);
+  if(keys['Space']||dpad.u) pos.y+=sp; if(keys['ShiftLeft']||dpad.d) pos.y-=sp;
+  camera.position.copy(pos); camera.rotation.order='YXZ'; camera.rotation.y=yaw; camera.rotation.x=pitch;
+  var hh=Math.floor(biomeAt(Math.floor(pos.x),Math.floor(pos.z))); inf.textContent=chunks.size+' chunks | h='+hh+' y='+Math.floor(pos.y); upd(); renderer.render(scene,camera);
+})();
+upd();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+</script>
+</body></html>

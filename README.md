@@ -1,23 +1,60 @@
-# BlockNet
+# BlockNetBETA
 
-Minecraft criativo no navegador: gere mundos, quebre e coloque blocos.
+Minecraft-like web game com shaders e mods. Roda no browser, sem build.
 
-## Jogar
+## Rodar
 
 ```bash
-cd Projects/BlockNet
-python3 serve.py 8080
+cd BlockNetBETA
+python3 -m http.server 8080
+# abre http://localhost:8080
 ```
 
-Abra `http://127.0.0.1:8080/`, crie um mundo e aperte **PLAY**.
+Ou qualquer servidor estatico. Precisa internet pro JSZip (CDN).
 
-## Controles
+## Estrutura
 
-- **PC:** WASD + mouse, clique quebra/coloca, B abre blocos
-- **Celular:** D-pad + botões (▲ pula, 🗡 quebra, 🧱 coloca, ＋ blocos)
+```
+index.html
+assets/js/app.js            # engine (voxel, chunks via worker, save IndexedDB)
+assets/js/LevelNoiseV2.js   # geracao de terreno (worker)
+assets/js/RandomLevelWorker.js  # gerador antigo (desativado)
+assets/js/shaders.js        # ShaderSys — packs .glslv/.glslf via snippet injection
+assets/js/mods.js           # ModSys — mods .zip (js/css/html) com IndexedDB
+assets/js/vendor/three.min.js
+```
 
-## Notas
+## Shaders
 
-- Mundos salvam sozinhos no navegador (IndexedDB)
-- Código, texturas e fonte 100% originais — nada da Mojang
-- Fonte: Press Start 2P (OFL)
+Packs zip com `pack.json` listando caminhos livres:
+
+```json
+{ "name": "MeuPack", "shaders": ["shaders/vento.glslv", "shaders/tonemap.glslf"] }
+```
+
+- `.glslv` = vertex (aplica so nas folhas), injetado apos `begin_vertex`
+- `.glslf` = fragment (aplica em tudo), injetado apos `map_fragment`
+- Importa pelo botao SHADERS no jogo. OFF desativa.
+
+## Mods
+
+Zips com `pack.json`:
+
+```json
+{ "name": "MeuMod", "js": ["main.js"], "css": ["style.css"] }
+```
+
+API no jogo: `__BN` (get/set/player/biome/scene/camera/renderer/THREE),
+`__BlockAPI.registerBlock`, `Mod.el/asset/worker`. Mods persistem em IndexedDB.
+
+## Proxy IA (mod Verity)
+
+`~/proxy_server.py` — proxy local porta 5000 (pollinations, sem key):
+
+```bash
+nohup python3 ~/proxy_server.py &
+```
+
+## Licenca
+
+MIT

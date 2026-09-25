@@ -65,5 +65,18 @@ var LevelNoise = (function(){
     for(var i=0;i<oct;i++){var n=1-Math.abs(simplex(x*f,y*f));n=n*n;sum+=a*n;norm+=a;a*=0.5;f*=2.1;}
     return sum/norm; // [0,1]
   }
-  return {perlin:perlin, simplex:simplex, fbm:perlinFbm, simplexFbm:simplexFbm, ridged:ridged};
+  // ---- Perlin 3D real (com grad3) ----
+  var grad3=[[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+  function perlin3(x,y,z){
+    var X=Math.floor(x)&255,Y=Math.floor(y)&255,Z=Math.floor(z)&255;
+    x-=Math.floor(x); y-=Math.floor(y); z-=Math.floor(z);
+    var u=fade(x),v=fade(y),w=fade(z);
+    var A=perm[X]+Y,AA=perm[A]+Z,AB=perm[A+1]+Z,B=perm[X+1]+Y,BA=perm[B]+Z,BB=perm[B+1]+Z;
+    function g(h,x,y,z){ var gg=grad3[h%12]; return gg[0]*x+gg[1]*y+gg[2]*z; }
+    var a=g(perm[AA],x,y,z),b=g(perm[BA],x-1,y,z),c=g(perm[AB],x,y-1,z),d=g(perm[BB],x-1,y-1,z);
+    var e=g(perm[AA+1],x,y,z-1),f=g(perm[BA+1],x-1,y,z-1),gg=g(perm[AB+1],x,y-1,z-1),h2=g(perm[BB+1],x-1,y-1,z-1);
+    return lerp(lerp(lerp(a,b,u),lerp(c,d,u),v),lerp(lerp(e,f,u),lerp(gg,h2,u),v),w)*0.964;
+  }
+  function caveNoise(x,y,z){ return perlin3(x*0.08,y*0.09,z*0.08)*0.6 + perlin3(x*0.18,y*0.22,z*0.18)*0.4; }
+  return {perlin:perlin, simplex:simplex, fbm:perlinFbm, simplexFbm:simplexFbm, ridged:ridged, perlin3:perlin3, caveNoise:caveNoise};
 })();

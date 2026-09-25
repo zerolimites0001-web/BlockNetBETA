@@ -4,26 +4,41 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>BlockNet</title>
-<link rel="stylesheet" href="./assets/css/style.css">
-<link rel="stylesheet" href="./assets/css/hud.css">
+<link rel="stylesheet" href="./assets/css/style.css?v=4">
+<link rel="stylesheet" href="./assets/css/hud.css?v=4">
 <script src="./assets/js/vendor/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 <div id="game"></div>
 <div id="fps">--</div>
 <div id="cross"></div>
 <div id="dbg" class="hidden"></div>
+<div id="pause" class="hidden">
+  <h2>PAUSADO</h2>
+  <button class="mcbtn big" id="pBack">Voltar ao jogo</button>
+  <button class="mcbtn" id="pSave">Salvar mundo</button>
+  <button class="mcbtn" id="pExit">Salvar e sair</button>
+</div>
 <div id="menu" class="hidden">
-  <h2>Blocos (B fecha)</h2>
-  <div id="grid"></div>
+  <div id="sheet">
+    <div id="grab"></div>
+    <div id="sheetHead"><b>Inventário</b><button id="mClose">✕</button></div>
+    <input id="mSearch" placeholder="🔍 buscar bloco..." autocomplete="off">
+    <div id="mTabs"></div>
+    <div id="mHot"></div>
+    <div id="mPal"></div>
+    <small id="mHint">toque no bloco, depois no slot • arraste a alça p/ fechar</small>
+  </div>
 </div>
 <div id="set" class="hidden">
   <h3>Render</h3>
   <label>Chunks (raio): <b id="vReal">2</b></label>
-  <input id="rgReal" type="range" min="1" max="8" value="2">
+  <input id="rgReal" type="range" min="1" max="16" value="2">
   <small id="stChunk"></small>
 </div>
 <div id="hotbar"></div>
+<button id="bPause" aria-label="pausa">II</button>
 <div id="hud">
   <div class="dpad">
     <div class="hole"></div><button data-m="f">▲</button><div class="hole"></div>
@@ -44,10 +59,41 @@
   <div id="wlist"></div>
   <div class="row"><input id="wname" placeholder="nome do mundo" maxlength="20"><button class="mcbtn" id="wnew">Criar</button></div>
   <div class="row"><button class="mcbtn big" id="wplay">PLAY</button><button class="mcbtn" id="wdel">Apagar</button></div>
+  <div class="row"><a class="mcbtn" id="wset" href="./settings.html">SETTINGS</a><button class="mcbtn" id="wshad">SHADERS</button><button class="mcbtn" id="wmods">MODS</button></div>
+  <input type="file" id="zipImp" accept=".zip,application/zip" style="display:none">
+  <div id="modpanel" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99;display:none;align-items:center;justify-content:center">
+    <div style="background:#1a1a1a;border:3px solid #555;max-width:420px;width:92%;max-height:80vh;overflow:auto;padding:12px;font-family:monospace;color:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>MODS</b><button class="mcbtn" id="modclose" style="flex:0;padding:4px 10px">X</button></div>
+      <button class="mcbtn big" id="modimport" style="width:100%;margin-bottom:10px">+ IMPORTAR .ZIP</button>
+      <div id="modlist"></div>
+    </div>
+  </div>
+  <input type="file" id="modImp" accept=".zip,application/zip" style="display:none">
+  <div id="shpanel" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99;display:none;align-items:center;justify-content:center">
+    <div style="background:#1a1a1a;border:3px solid #555;max-width:420px;width:92%;max-height:80vh;overflow:auto;padding:12px;font-family:monospace;color:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>SHADERS</b><button class="mcbtn" id="shclose" style="flex:0;padding:4px 10px">X</button></div>
+      <button class="mcbtn big" id="shimport" style="width:100%;margin-bottom:10px">+ IMPORTAR .ZIP</button>
+      <div id="shlist"></div>
+    </div>
+  </div>
   <small>mundo = seed + suas alterações (IndexedDB)</small>
+  <div class="row"><button class="mcbtn" id="wDestroy" style="background:#a00">DESTROY DATA</button><button class="mcbtn" id="wLog">LOG</button></div>
+<div id="logpanel" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:300;display:none;align-items:center;justify-content:center">
+<div style="background:#0a0a0a;border:3px solid #555;max-width:480px;width:94%;max-height:82vh;overflow:auto;padding:10px;font-family:monospace;color:#0f0;font-size:11px">
+<div style="display:flex;gap:6px;margin-bottom:8px"><button class="mcbtn" id="logCopy" style="flex:1">COPIAR</button><button class="mcbtn" id="logClose" style="flex:0;padding:4px 12px">X</button></div>
+<pre id="logBody" style="white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+</div>
+</div>
 </div>
 <div id="load" style="display:none"><h1>BLOCKNET</h1><p>Recebendo assets... 0%</p><div class="bar"><div class="fill"></div></div><small></small></div>
-<script src="./assets/js/LevelNoise.js"></script>
-<script src="./assets/js/app.js"></script>
+<script>
+window.__LOGBUF=[];
+window.__log=function(m){try{var t=new Date().toISOString().slice(11,19);window.__LOGBUF.push('['+t+'] '+m);if(window.__LOGBUF.length>300)window.__LOGBUF.shift();}catch(e){}};
+addEventListener('error',function(e){window.__log('ERR '+((e&&e.message)||e)+' @'+((e&&e.filename)||''));});
+addEventListener('unhandledrejection',function(e){window.__log('REJ '+((e.reason&&e.reason.message)||e.reason));});
+</script>
+<script src="./assets/js/shaders.js?v=7"></script>
+<script src="./assets/js/mods.js?v=9"></script>
+<script src="./assets/js/app.js?v=26"></script>
 </body>
 </html>
