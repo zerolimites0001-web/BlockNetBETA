@@ -47,14 +47,6 @@ Zips com `pack.json`:
 API no jogo: `__BN` (get/set/player/biome/scene/camera/renderer/THREE),
 `__BlockAPI.registerBlock`, `Mod.el/asset/worker`. Mods persistem em IndexedDB.
 
-## Proxy IA (mod Verity)
-
-`~/proxy_server.py` — proxy local porta 5000 (pollinations, sem key):
-
-```bash
-nohup python3 ~/proxy_server.py &
-```
-
 ## Licenca
 
 MIT
